@@ -53,7 +53,7 @@ import numpy as np
 import numba as nb
 import matplotlib.pyplot as plt
 
-from forced_LBGK_lib import get_LBM_consts, initialise_pops, update_LBM_pops_closed_combined
+from forced_LBGK_lib import get_LBM_consts, initialise_pops, update_LBM_pops_closed#, update_LBM_pops_closed_combined
 from multi_marker_IBM_lib import gaus_consts, gaus_dist, dual_gaus_consts, dual_gaus_dist, plot_gaus_dist, IB_force_density, interpolate_marker_vels
 
 max_mem_avail = 12.0e9 # maximum available memory [bytes]
@@ -282,9 +282,12 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
                                    dist_func, r_gaus, sigma, A, N_markers, marker_pos, marker_f, marker_nh, marker_nh_size, int_err)
         
         # Calculate fluid properties, perform collisions, and stream populations
-        update_LBM_pops_closed_combined(t, pops_pre, pops_post, F, rho, u, u_mag_sq, Nx, Ny, Nz, 
-                                        inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, 
-                                        N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx)
+        # update_LBM_pops_closed_combined(t, pops_pre, pops_post, F, rho, u, u_mag_sq, Nx, Ny, Nz, 
+        #                                 inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, 
+        #                                 N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx)
+        update_LBM_pops_closed(pops_pre, pops_post, F, rho, u, u_mag_sq, Nx, Ny, Nz, 
+                               inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, 
+                               N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx)
         
         # Interpolate boundary marker velocities
         interpolate_marker_vels(u, N_markers, marker_vel, marker_nh, marker_nh_size)
