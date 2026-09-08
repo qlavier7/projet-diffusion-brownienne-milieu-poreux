@@ -52,9 +52,12 @@ import warnings
 import numpy as np
 import numba as nb
 import matplotlib.pyplot as plt
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-from forced_LBGK_lib import get_LBM_consts, initialise_pops, update_LBM_pops_closed#, update_LBM_pops_closed_combined
-from multi_marker_IBM_lib import gaus_consts, gaus_dist, dual_gaus_consts, dual_gaus_dist, plot_gaus_dist, IB_force_density, interpolate_marker_vels
+from fluid_solver_code.forced_LBGK_lib import get_LBM_consts, initialise_pops, update_LBM_pops_closed#, update_LBM_pops_closed_combined
+from fluid_solver_code.multi_marker_IBM_lib import gaus_consts, gaus_dist, dual_gaus_consts, dual_gaus_dist, plot_gaus_dist, IB_force_density, interpolate_marker_vels
 
 max_mem_avail = 12.0e9 # maximum available memory [bytes]
 
@@ -65,7 +68,7 @@ max_mem_avail = 12.0e9 # maximum available memory [bytes]
 # Graphing and Outputs
 show_gaus_dist = True # plot the y distribution of the force distribution function
 live_flow_plot = True # plot the flow field during the simulation
-N_outputs = 3 # n.o. times to plot the solution field (only if live_flow_plot=True)
+N_outputs = 8 # n.o. times to plot the solution field (only if live_flow_plot=True)
 show_mass = True # plot the total fluid mass over the simulation duration - can be useful for identifying instabilities (should remain constant)
 
 
@@ -103,7 +106,7 @@ mu = rho_0*nu # dynamic viscosity [kg m-1 s-1]
 rho_p_over_rho_f = 1.14  # rapport de densité particule/fluide (Cao et al.)
 rho_p = rho_p_over_rho_f * rho_0
 
-g_z = -1.0e-2  # accélération de gravité [lattice units], négative = vers le bas (-z)
+g_z = -2.0e-3  # accélération de gravité [lattice units], négative = vers le bas (-z)
 
 
 #%% Solver Parameters
@@ -140,18 +143,19 @@ else:
 
 # Repulsion
 @nb.jit(nopython=True, fastmath=True)
-def gravity_repulsion_forcing(N_markers, marker_pos, marker_radii, F_gravity_y, 
-                              r_threshold, epsilon_stiff, c_ij, marker_f):
+def lubrication_correction_forcing(N_markers, marker_pos, marker_vel, marker_radii, F_gravity_y, 
+                              lubrication_threshold, epsilon_stiff, c_ij, marker_f):
     """
     Applique la gravité (poids apparent, direction -z) et la force de répulsion 
     à courte portée entre particules (Glowinski et al. via Cao et al., Eq. 16).
     """
     
-    # Réinitialisation : gravité seule
+    # Initialization : gravity only
     for m in range(N_markers):
         marker_f[m, 0] = 0.0
-        marker_f[m, 1] = (m+1) * F_gravity_y
+        marker_f[m, 1] = F_gravity_y
         marker_f[m, 2] = 0.0
+        #print("gravity : ", F_gravity_y)
     
     # Répulsion par paire (N_markers petit -> boucle simple, pas de race condition)
     for i in range(N_markers):
@@ -164,16 +168,20 @@ def gravity_repulsion_forcing(N_markers, marker_pos, marker_radii, F_gravity_y,
             dz = marker_pos[i, 2] - marker_pos[j, 2]
             dist = (dx*dx + dy*dy + dz*dz)**0.5
             
-            gap = dist - marker_radii[i] - marker_radii[j]  # distance surface-à-surface
+            h = dist - marker_radii[i] - marker_radii[j]  # h is the gap between the 2 surfaces
             
-            if gap <= r_threshold:
-                dist_safe = max(dist, 1.0e-8)  # évite la division par zéro
-                ratio = (gap - r_threshold) / r_threshold
-                mag = (c_ij / epsilon_stiff) * ratio * ratio  # toujours >= 0
+            if h <= lubrication_threshold * 1:
+                R_eff = marker_radii[i]*marker_radii[j]/(marker_radii[i]+marker_radii[j])
+                U12 = marker_vel[i, :] - marker_vel[j, :]
+                coef = -6 * np.pi * nu * R_eff**2 * (1/h - 1/lubrication_threshold)
+                print(coef)
                 
-                marker_f[i, 0] += mag * dx / dist_safe
-                marker_f[i, 1] += mag * dy / dist_safe
-                marker_f[i, 2] += mag * dz / dist_safe
+                marker_f[i, 0] += coef * U12[0] * dx**2/dist
+                marker_f[i, 1] += coef * U12[1] * dy**2/dist
+                #print("répulsion y : ", marker_f[i, 1])
+                marker_f[i, 2] += coef * U12[2] * dz**2/dist
+
+
 
 
 
@@ -225,19 +233,27 @@ r_cutoff_inner_sq = r_cutoff_inner*r_cutoff_inner
 
 
 # IBM Arrays
-"""init_marker_pos = np.empty((N_markers, 3), dtype=np.float64) # initial marker positions
-init_marker_pos[:, 0] = cx_particle
+init_marker_pos = np.empty((N_markers, 3), dtype=np.float64) # initial marker positions
+"""init_marker_pos[:, 0] = cx_particle
 init_marker_pos[:, 1] = cy_particle
 init_marker_pos[:, 2] = cz_particle"""
-init_marker_pos = np.empty((N_markers, 3), dtype=np.float64)
-offset = 3 * D_particle  # à ajuster : doit être assez grand pour éviter le recouvrement des noyaux gaussiens
+"""offset = 3 * D_particle  # à ajuster : doit être assez grand pour éviter le recouvrement des noyaux gaussiens
 
 init_marker_pos[0, 0] = cx_particle - offset/4
 init_marker_pos[0, 1] = cy_particle
 init_marker_pos[0, 2] = cz_particle
 
-init_marker_pos[1, 0] = cx_particle + offset/4
+init_marker_pos[1, 0] = cx_particle #+ offset/4
 init_marker_pos[1, 1] = cy_particle + 1 * D_particle
+init_marker_pos[1, 2] = cz_particle"""
+offset = 3 * D_particle  # à ajuster : doit être assez grand pour éviter le recouvrement des noyaux gaussiens
+
+init_marker_pos[0, 0] = cx_particle
+init_marker_pos[0, 1] = cy_particle
+init_marker_pos[0, 2] = cz_particle
+
+init_marker_pos[1, 0] = cx_particle + 0.8 * D_particle
+init_marker_pos[1, 1] = cy_particle + 2 * D_particle
 init_marker_pos[1, 2] = cz_particle
 marker_pos = np.empty_like(init_marker_pos) # Lagrangian boundary marker positions
 marker_vel = np.empty_like(marker_pos) # Lagrangian boundary marker velocities
@@ -301,9 +317,9 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
     fluid_mass_hist = np.empty(Nt, dtype=np.float64)
 
     V_particle = (4.0/3.0) * np.pi * r_particle**3  # volume de la particule (sphère)
-    F_gravity_y = (rho_p - rho_0) * V_particle * g_z  # force nette (poids - Archimède), par particule
+    F_gravity_y = rho_p * V_particle * g_z  # force nette (poids - Archimède), par particule
     
-    r_threshold = 2.0  # seuil de déclenchement ρ ≈ 2*dx (Cao et al.)
+    lubrication_threshold = 2.0  # seuil de déclenchement ρ ≈ 2*dx (Cao et al.)
     epsilon_stiff = 1.0  # rigidité ε = (dx)^2 = 1
     c_ij = abs(F_gravity_y)  # échelle = force de flottabilité, comme dans l'article
 
@@ -318,8 +334,8 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
         
         
         # Calculate marker forces
-        gravity_repulsion_forcing(N_markers, marker_pos, marker_radii, F_gravity_y, 
-                            r_threshold, epsilon_stiff, c_ij, marker_f)
+        lubrication_correction_forcing(N_markers, marker_pos, marker_vel, marker_radii, F_gravity_y, 
+                            lubrication_threshold, epsilon_stiff, c_ij, marker_f)
         
         # Calculate forcing due to IB markers
         int_err = IB_force_density(Nx, Ny, Nz, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, F, 
@@ -337,6 +353,9 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
         interpolate_marker_vels(u, N_markers, marker_vel, marker_nh, marker_nh_size)
         
         # Integrate boundary markers
+        marker_vel[0, 0] = 0.0
+        marker_vel[0, 1] = 0.0
+        marker_vel[0, 2] = 0.0
         marker_pos += marker_vel # since dt=1
         
         
