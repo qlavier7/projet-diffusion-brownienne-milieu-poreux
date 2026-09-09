@@ -139,7 +139,8 @@ else:
 
 #%% Brownian Motion
 
-kb_T = 1e-4 #k_B T
+kb_T = 1 #k_B T
+gamma = 6*np.pi*mu*r_particle # drag coefficient
 
 @nb.jit(nopython=True, parallel=True, fastmath=True)
 def brownian_forcing(N_markers, marker_f):
@@ -152,9 +153,9 @@ def brownian_forcing(N_markers, marker_f):
 
     for m in nb.prange(N_markers):
         np.int64(m)
-        marker_f[m, 0] = np.random.normal(0, 1)*(np.pi*D_particle*kb_T)**(1/2)
-        marker_f[m, 1] = np.random.normal(0, 1)*(np.pi*D_particle*kb_T)**(1/2)
-        marker_f[m, 2] = np.random.normal(0, 1)*(np.pi*D_particle*kb_T)**(1/2)
+        marker_f[m, 0] = np.random.normal(0, 1)*(2*gamma*kb_T)**(1/2) # dt = 1
+        marker_f[m, 1] = np.random.normal(0, 1)*(2*gamma*kb_T)**(1/2) # dt = 1
+        marker_f[m, 2] = np.random.normal(0, 1)*(2*gamma*kb_T)**(1/2) # dt = 1
 
 # @nb.jit(nopython=True, parallel=True, fastmath=True)
 def drag_force(N_markers, marker_f, marker_vel):
@@ -164,9 +165,9 @@ def drag_force(N_markers, marker_f, marker_vel):
     """
     for m in nb.prange(N_markers):
         np.int64(m)
-        marker_f[m, 0] -= D_particle/2*np.pi*marker_vel[m, 0]
-        marker_f[m, 1] -= D_particle/2*np.pi*marker_vel[m, 1]
-        marker_f[m, 2] -= D_particle/2*np.pi*marker_vel[m, 2]
+        marker_f[m, 0] -= gamma*marker_vel[m, 0]
+        marker_f[m, 1] -= gamma*marker_vel[m, 1]
+        marker_f[m, 2] -= gamma*marker_vel[m, 2]
 
 #%% Initialisation Functions
 def initialise_fluid_arrays(Nx, Ny, Nz, rho_0, rho, u, u_mag_sq, F, pops_pre, pops_post):
@@ -213,6 +214,7 @@ elif IB_kernel == 'dual gaussian':
     dist_func = dual_gaus_dist
 r_cutoff_outer_sq = r_cutoff_outer*r_cutoff_outer
 r_cutoff_inner_sq = r_cutoff_inner*r_cutoff_inner
+
 
 
 # IBM Arrays
