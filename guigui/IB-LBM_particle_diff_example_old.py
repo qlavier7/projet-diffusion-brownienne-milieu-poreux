@@ -293,7 +293,7 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
         # Calculate marker forces
         brownian_forcing(N_markers, marker_f)
 
-        drag_force(N_markers, marker_f, marker_vel)
+        # drag_force(N_markers, marker_f, marker_vel)
         
         # Calculate forcing due to IB markers
         int_err = IB_force_density(Nx, Ny, Nz, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, F, 
