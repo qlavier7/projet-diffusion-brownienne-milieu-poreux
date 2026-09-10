@@ -217,7 +217,7 @@ def calc_Fi_comp_BGK(Fx, Fy, Fz, ux, uy, uz, cu, cx, cy, cz, w, inv_cs2, inv_cs4
 #%% BGK Forced Collision
 @nb.jit(nopython=True, parallel=True, fastmath=True)
 def collide_forced(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, 
-                   inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c):
+                   inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega_S_coeff, N_vels, w, c, nu, kB_T):
     """
     Calculates and saves the velocity and density fields from the current 
     populations and performs the BGK collision globally with Guo forcing.
@@ -268,12 +268,81 @@ def collide_forced(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz,
     None.
     """
     
+    """
+    Calculates and saves the velocity and density fields from the current 
+    populations and performs the BGK collision globally with Guo forcing
+    and thermal fluctuations.
+    """
+    
+    # -------------------------------------------------------------------------
+    # PRÉCALCULS GLOBAUX : Base des modes, paramètres de relaxation et bruit
+    # -------------------------------------------------------------------------
+    
+    # Vecteurs de base e_ki pour le modèle D3Q19 (Table II)
+    e_k = np.zeros((19, 19), dtype=np.float64)
+    
+    for q in range(19):
+        cx, cy, cz = c[q, 0], c[q, 1], c[q, 2]
+        c2 = cx*cx + cy*cy + cz*cz
+        
+        e_k[0, q] = 1.0
+        e_k[1, q] = cx
+        e_k[2, q] = cy
+        e_k[3, q] = cz
+        e_k[4, q] = c2 - 1.0
+        e_k[5, q] = 3.0*cx*cx - c2
+        e_k[6, q] = cy*cy - cz*cz
+        e_k[7, q] = cx*cy
+        e_k[8, q] = cy*cz
+        e_k[9, q] = cz*cx
+        e_k[10, q] = (3.0*c2 - 5.0)*cx
+        e_k[11, q] = (3.0*c2 - 5.0)*cy
+        e_k[12, q] = (3.0*c2 - 5.0)*cz
+        e_k[13, q] = (cy*cy - cz*cz)*cx
+        e_k[14, q] = (cz*cz - cx*cx)*cy
+        e_k[15, q] = (cx*cx - cy*cy)*cz
+        e_k[16, q] = 3.0*c2*c2 - 6.0*c2 + 1.0
+        e_k[17, q] = (2.0*c2 - 3.0)*(3.0*cx*cx - c2)
+        e_k[18, q] = (2.0*c2 - 3.0)*(cy*cy - cz*cz)
+
+    w_k = np.zeros(19, dtype=np.float64)
+    for mk in range(19):
+        norm_k = 0.0
+        for q in range(19):
+            norm_k += w[q] * (e_k[mk, q]**2)
+        w_k[mk] = norm_k
+
+    # Matrice de passage orthonormée e_hat
+    e_hat = np.zeros((19, 19), dtype=np.float64)
+    for mk in range(19):
+        for q in range(19):
+            e_hat[mk, q] = np.sqrt(w[q] / w_k[mk]) * e_k[mk, q]
+
+    # Paramètres de relaxation (gamma)
+    gamma = np.zeros(19, dtype=np.float64)
+    eta_hat = nu*inv_cs2
+    gamma[0:4] = 1.0                                # Modes conservés (masse et impulsion)
+    gamma[4] = (3.0 * eta_hat - 1.0) / (3.0 * eta_hat + 1.0)  # Mode de contrainte volumique (viscosité = nu)
+    gamma_s = (2.0 * eta_hat - 1.0) / (2.0 * eta_hat + 1.0)   # Modes de contrainte de cisaillement
+    gamma[5:10] = gamma_s
+    gamma[10:19] = 0.0                              # Modes cinétiques purement stochastiques
+
+    # Amplitude du bruit garantissant le respect du bilan détaillé
+    phi = np.sqrt(1.0 - gamma**2)
+    
+    # Contrôle de l'intensité des fluctuations
+    mu = kB_T * inv_cs2  # Eq. 90: \mu = (kB_T * h^2) / (c_s^2 * b^{d+2}), ici ramené en unités réseaux (h=1, b=1)
+
+    # -------------------------------------------------------------------------
+    # DYNAMIQUE SUR GRILLE SPATIALE
+    # -------------------------------------------------------------------------
+    
     for i in nb.prange(Nx):
         i = np.int64(i)
         for j in range(Ny):
             for k in range(Nz):
                 
-                # Calculate rho and u
+                # Calcul de rho et u
                 local_rho = 0.0
                 local_rhou_x = 0.5*F[i, j, k, 0]
                 local_rhou_y = 0.5*F[i, j, k, 1]
@@ -293,15 +362,20 @@ def collide_forced(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz,
                 local_uz = local_rhou_z*local_rho_inv
                 local_u2 = local_ux*local_ux + local_uy*local_uy + local_uz*local_uz
                 
-                # Save Data
+                # Sauvegarde des données macroscopiques
                 rho[i, j, k] = local_rho
                 u[i, j, k, 0] = local_ux
                 u[i, j, k, 1] = local_uy
                 u[i, j, k, 2] = local_uz
                 u_mag2[i, j, k] = local_u2
                 
-                # BGK Collision Loop
-                for q in range(N_vels):
+                # Tableaux temporaires pour les variables locales
+                local_f_eq = np.zeros(19, dtype=np.float64)
+                local_F_i = np.zeros(19, dtype=np.float64)
+                local_x = np.zeros(19, dtype=np.float64)
+                
+                # 1 & 2. Calcul des variables hors-équilibre normalisées (x_i)
+                for q in range(19):
                     cx = c[q, 0]
                     cy = c[q, 1]
                     cz = c[q, 2]
@@ -311,9 +385,35 @@ def collide_forced(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz,
                     F_i = calc_Fi_comp_BGK(F[i, j, k, 0], F[i, j, k, 1], F[i, j, k, 2], local_ux, local_uy, local_uz, 
                                            cu, cx, cy, cz, w[q], inv_cs2, inv_cs4)
                     
-                    ## Perform forced BGK collisions
-                    pops_post[i, j, k, q] = pops_pre[i, j, k, q]*omega_prime + f_eq*omega + F_i*omega_S_coeff # plus optional fluctuating stress term
-
+                    local_f_eq[q] = f_eq
+                    local_F_i[q] = F_i
+                    
+                    # Normalisation adimensionnée de la fraction hors-équilibre
+                    local_x[q] = (pops_pre[i, j, k, q] - f_eq) / np.sqrt(mu * local_rho * w[q])
+                
+                # 3 & 4. Projection sur l'espace des modes et Mise à jour stochastique
+                local_m_star = np.zeros(19, dtype=np.float64)
+                for mk in range(19):
+                    m_k = 0.0
+                    for q in range(19):
+                        m_k += e_hat[mk, q] * local_x[q]
+                    
+                    r_k = 0.0
+                    # Injection du bruit indépendant de distribution normale réduite N(0, 1) pour les modes non conservés
+                    if mk > 3:
+                        r_k = np.random.randn()
+                    
+                    # Relaxation de la partie déterministe et ajout de l'intensité stochastique
+                    local_m_star[mk] = gamma[mk] * m_k + phi[mk] * r_k
+                
+                # 5 & 6. Rétro-projection linéaire et réintégration des forçages
+                for q in range(19):
+                    x_star = 0.0
+                    for mk in range(19):
+                        x_star += e_hat[mk, q] * local_m_star[mk]
+                    
+                    # Reconstruction de l'équation de Boltzmann sur réseaux (post-collision) + forçage scalaire de Guo
+                    pops_post[i, j, k, q] = local_f_eq[q] + np.sqrt(mu * local_rho * w[q]) * x_star + local_F_i[q] * omega_S_coeff
 
 
 #%% Streaming
@@ -1374,7 +1474,7 @@ def update_LBM_pops_1D_flow(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, 
 
 def update_LBM_pops_closed(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, 
                            inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, 
-                           N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx):
+                           N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, nu, kB_T):
     """
     Updates the paricle populations for one time step using the quasi-
     compressible LB equaiton with BGK collisions and Guo forcing. First collides
@@ -1434,7 +1534,7 @@ def update_LBM_pops_closed(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz,
     
     # Calculate fluid properties and perform collisions
     collide_forced(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, 
-                   inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c)
+                   inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega_S_coeff, N_vels, w, c, nu, kB_T)
     
     # Stream populations
     stream_closed(pops_pre, pops_post, Nx, Ny, Nz, 

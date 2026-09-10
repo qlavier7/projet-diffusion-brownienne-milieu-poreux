@@ -107,6 +107,7 @@ mu = rho_0*nu # dynamic viscosity [kg m-1 s-1]
 #%% Solver Parameters
 sim_time = 1000 # simulation time [s] - adjust accordingly
 Nt = int(sim_time) # number of time steps (since dt=1)
+kB_T = 0* 0.02
 
 outevery = int(Nt/N_outputs) # generate an output every this many steps
 # outevery = 2
@@ -279,7 +280,7 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
         
         
         # Calculate marker forces
-        brownian_forcing(N_markers, marker_f)
+        #brownian_forcing(N_markers, marker_f)
         
         # Calculate forcing due to IB markers
         int_err = IB_force_density(Nx, Ny, Nz, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, F, 
@@ -291,7 +292,7 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
         #                                 N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx)
         update_LBM_pops_closed(pops_pre, pops_post, F, rho, u, u_mag_sq, Nx, Ny, Nz, 
                                inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, 
-                               N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx)
+                               N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, nu, kB_T)
         
         # Interpolate boundary marker velocities
         interpolate_marker_vels(u, N_markers, marker_vel, marker_nh, marker_nh_size)
