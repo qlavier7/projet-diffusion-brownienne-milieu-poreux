@@ -100,14 +100,13 @@ mu = rho_0*nu # dynamic viscosity [kg m-1 s-1]
 
 
 # Diffusion - would probably be defined by a temperature
-# F_brownian_scale = 5 # sample parameter for example only - the simulation may go unstable if the marker force is too large
-
+kB_T = 0.01
 
 
 #%% Solver Parameters
 sim_time = 1000 # simulation time [s] - adjust accordingly
 Nt = int(sim_time) # number of time steps (since dt=1)
-kB_T = 0.00000000001
+
 
 outevery = int(Nt/N_outputs) # generate an output every this many steps
 # outevery = 2
@@ -139,24 +138,6 @@ else:
 
 
 #%% Brownian Motion
-
-# kb_T = 1 #k_B T
-gamma = 6*np.pi*mu*r_particle # drag coefficient
-
-@nb.jit(nopython=True, parallel=True, fastmath=True)
-def brownian_forcing(N_markers, marker_f):
-    """
-    Brownian forcing function.
-    
-    Large marker forces can cause instabilities.
-    """
-    # print(marker_vel, np.size(marker_vel))
-
-    for m in nb.prange(N_markers):
-        np.int64(m)
-        marker_f[m, 0] = np.random.normal(0, 1)*(2*gamma*kb_T)**(1/2) # dt = 1
-        marker_f[m, 1] = np.random.normal(0, 1)*(2*gamma*kb_T)**(1/2) # dt = 1
-        marker_f[m, 2] = np.random.normal(0, 1)*(2*gamma*kb_T)**(1/2) # dt = 1
 
 #%% Initialisation Functions
 def initialise_fluid_arrays(Nx, Ny, Nz, rho_0, rho, u, u_mag_sq, F, pops_pre, pops_post):
@@ -239,7 +220,7 @@ print(f'Particle Diameter: {D_particle}\nSpacing Multiplier: {spacing_mutl}\nNx,
 print(f'Boundary Representation: immersed boundary method ({IB_kernel})')
 if IB_kernel == 'dual gaussian':
     print(f'Distribution Width: {f_dist_width}')
-print(f'Kinematic Viscosity: {nu:.4f}\nInitial Fluid Density: {rho_0}\nForcing Scale: {(np.pi*D_particle*kb_T)**(1/2)}')
+print(f'Kinematic Viscosity: {nu:.4f}')
 print(f'Relaxation Factor (BGK): {tau:.4f}\n')
 
 
