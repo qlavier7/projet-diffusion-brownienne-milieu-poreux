@@ -300,9 +300,8 @@ def save_marker_data(step, marker_pos_hist, marker_vel_hist, marker_f_hist, N_ma
 @nb.jit(nopython=True, fastmath=True)
 def resolve_particle_collisions(marker_pos, marker_vel, D_particles, rhos):
     """ This function computes the 3D collision response between two spherical particles.
-    It only works for now for two identical particles : same mass, same radius.
-    It works for different initial speeds.
-    It doesn't work for more than two particles, neither for particle-wall interaction.
+    It works for N  particles : for whatever mass, radius, initial speed.
+    It doesn't work when there is more than 1 collision at a time for the same particle.
     """
 
     collided = np.zeros(N_markers, dtype=nb.boolean)
@@ -377,7 +376,7 @@ def resolve_particle_collisions(marker_pos, marker_vel, D_particles, rhos):
                         break
     
     for i in range(N_markers):
-        if not collided[i]:      
+        if not collided[i]:
             marker_pos[i, 0] += marker_vel[i, 0]
             marker_pos[i, 1] += marker_vel[i, 1]
             marker_pos[i, 2] += marker_vel[i, 2]
@@ -411,7 +410,7 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
         if t>=100:
             marker_f[0, 0] = 0 # update force marker 1
             marker_f[1, 0] = 0 # update force marker 2
-            marker_f[2, 0] = 0 # update force marker 3
+            marker_f[2, 1] = 0 # update force marker 3
         
         if np.isnan(u_mag_sq).any():
             raise RuntimeError(f'Unrealistic velocities: t={t}')
@@ -531,7 +530,7 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
             break
     
     if live_flow_plot and len(frames) > 0:
-        imageio.mimsave('particle_diffusion.gif', frames, fps=15)
+        imageio.mimsave('particle_diffusion.gif', frames, fps=5, loop=0)
     end_time = time.perf_counter()
     loop_wt = end_time - start_time
     cell_updates = n_lattice*(t+1)
