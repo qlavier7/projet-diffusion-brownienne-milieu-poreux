@@ -65,7 +65,7 @@ max_mem_avail = 12.0e9 # maximum available memory [bytes]
 # Graphing and Outputs
 show_gaus_dist = False # plot the y distribution of the force distribution function
 live_flow_plot = True # plot the flow field during the simulation
-N_outputs = 2 # n.o. times to plot the solution field (only if live_flow_plot=True)
+N_outputs = 40 # n.o. times to plot the solution field (only if live_flow_plot=True)
 show_mass = False # plot the total fluid mass over the simulation duration - can be useful for identifying instabilities (should remain constant)
 
 
@@ -107,7 +107,7 @@ mu = rho_0*nu # dynamic viscosity [kg m-1 s-1]
 #%% Solver Parameters
 sim_time = 1000 # simulation time [s] - adjust accordingly
 Nt = int(sim_time) # number of time steps (since dt=1)
-kB_T = 0* 0.02
+kB_T = 0.00000000001
 
 outevery = int(Nt/N_outputs) # generate an output every this many steps
 # outevery = 2
@@ -293,7 +293,7 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
         update_LBM_pops_closed(pops_pre, pops_post, F, rho, u, u_mag_sq, Nx, Ny, Nz, 
                                inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, 
                                N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, nu, kB_T)
-        
+ 
         # Interpolate boundary marker velocities
         interpolate_marker_vels(u, N_markers, marker_vel, marker_nh, marker_nh_size)
         
@@ -329,6 +329,7 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
                 u_mag_sq_max = u_mag_sq_curr
             
             m = 0 # only plot the first marker
+            
             z_slice = min(max(int(round(marker_pos[m, 2])), 0), Nz-1)
             
             plt.figure(figsize=(5, 4))

@@ -305,12 +305,8 @@ def collide_forced(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz,
         e_k[17, q] = (2.0*c2 - 3.0)*(3.0*cx*cx - c2)
         e_k[18, q] = (2.0*c2 - 3.0)*(cy*cy - cz*cz)
 
-    w_k = np.zeros(19, dtype=np.float64)
-    for mk in range(19):
-        norm_k = 0.0
-        for q in range(19):
-            norm_k += w[q] * (e_k[mk, q]**2)
-        w_k[mk] = norm_k
+    w_k = np.array([1.0, 1.0/3.0, 1.0/3.0, 1.0/3.0, 2.0/3.0, 4.0/3.0, 4.0/9.0, 1.0/9.0, 1.0/9.0, 1.0/9.0, 
+                    2.0/3.0, 2.0/3.0, 2.0/3.0, 2.0/9.0, 2.0/9.0, 2.0/9.0, 2.0, 4.0/3.0, 4.0/9.0], dtype=np.float64)
 
     # Matrice de passage orthonormée e_hat
     e_hat = np.zeros((19, 19), dtype=np.float64)
@@ -413,8 +409,109 @@ def collide_forced(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz,
                         x_star += e_hat[mk, q] * local_m_star[mk]
                     
                     # Reconstruction de l'équation de Boltzmann sur réseaux (post-collision) + forçage scalaire de Guo
-                    pops_post[i, j, k, q] = local_f_eq[q] + np.sqrt(mu * local_rho * w[q]) * x_star + local_F_i[q] * omega_S_coeff
+                    pops_post[i, j, k, q] = pops_pre[i, j, k, q] + np.sqrt(mu * local_rho * w[q]) * x_star + local_F_i[q] * omega_S_coeff
+    
 
+@nb.jit(nopython=True, parallel=True, fastmath=True)
+def collide_forced2(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, 
+                   inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c):
+    """
+    Calculates and saves the velocity and density fields from the current 
+    populations and performs the BGK collision globally with Guo forcing.
+
+    Parameters
+    ----------
+    pops_pre : ndarray
+        pre-collision populations. ndims=4, dtype=float
+    pops_post : ndarray
+        post-collision populations. ndims=4, dtype=float
+    F : ndarray
+        fluid force density field. ndims=4, dtype=float
+    rho : ndarray
+        fluid density field. ndims=3, dtype=float
+    u : ndarray
+        fluid velocity field. ndims=4, dtype=float
+    u_mag2 : ndarray
+        fluid velocity squared magnitude field. ndims=3, dtype=float
+    Nx : int
+        number of fluid cells in the x direction.
+    Ny : int
+        number of fluid cells in the y direction.
+    Nz : int
+        number of fluid cells in the z direction.
+    inv_cs2 : float
+        inverse squared sonic velocity.
+    inv_2cs2 : float
+        half inverse squared sonic velocity.
+    inv_cs4 : float
+        inverse sonic velocity fourth power.
+    inv_2cs4 : float
+        half inverse sonic velocity fourth power.
+    omega : float
+        inverse relaxation factor.
+    omega_prime : float
+        "conjugate" inverse relaxation factor (1 - omega).
+    omega_S_coeff : float
+        "conjugate" half inverse relaxation factor.
+    N_vels : int
+        number of discrete velocities (i.e. "lattice vectors").
+    w : ndarray
+        discrete velocity weightings. ndims=1, dtype=float
+    c : ndarray
+        discrete velocity set. ndtims=2, dtype=int
+
+    Returns
+    -------
+    None.
+    """
+    
+    for i in nb.prange(Nx):
+        i = np.int64(i)
+        for j in range(Ny):
+            for k in range(Nz):
+                
+                # Calculate rho and u
+                local_rho = 0.0
+                local_rhou_x = 0.5*F[i, j, k, 0]
+                local_rhou_y = 0.5*F[i, j, k, 1]
+                local_rhou_z = 0.5*F[i, j, k, 2]
+                
+                for q in range(N_vels):
+                    pop = pops_pre[i, j, k, q]
+                    local_rho += pop
+                    local_rhou_x += pop*c[q, 0]
+                    local_rhou_y += pop*c[q, 1]
+                    local_rhou_z += pop*c[q, 2]
+                
+                if local_rho < 1.0e-14: local_rho = 1.0e-14
+                local_rho_inv = 1.0/local_rho
+                local_ux = local_rhou_x*local_rho_inv
+                local_uy = local_rhou_y*local_rho_inv
+                local_uz = local_rhou_z*local_rho_inv
+                local_u2 = local_ux*local_ux + local_uy*local_uy + local_uz*local_uz
+                
+                # Save Data
+                rho[i, j, k] = local_rho
+                u[i, j, k, 0] = local_ux
+                u[i, j, k, 1] = local_uy
+                u[i, j, k, 2] = local_uz
+                u_mag2[i, j, k] = local_u2
+                
+                # BGK Collision Loop
+                for q in range(N_vels):
+                    cx = c[q, 0]
+                    cy = c[q, 1]
+                    cz = c[q, 2]
+                    cu = cx*local_ux + cy*local_uy + cz*local_uz
+                    
+                    f_eq = calc_f_eq_comp_BGK(cu, local_u2, local_rho, w[q], inv_cs2, inv_2cs2, inv_2cs4)
+                    F_i = calc_Fi_comp_BGK(F[i, j, k, 0], F[i, j, k, 1], F[i, j, k, 2], local_ux, local_uy, local_uz, 
+                                           cu, cx, cy, cz, w[q], inv_cs2, inv_cs4)
+                    
+                    ## Perform forced BGK collisions
+                    
+                    pops_post[i, j, k, q] = pops_pre[i, j, k, q]*omega_prime + f_eq*omega + F_i*omega_S_coeff # plus optional fluctuating stress term
+                    
 
 #%% Streaming
 @nb.jit(nopython=True, parallel=True, fastmath=True)
@@ -1533,9 +1630,8 @@ def update_LBM_pops_closed(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz,
     """
     
     # Calculate fluid properties and perform collisions
-    collide_forced(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, 
-                   inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega_S_coeff, N_vels, w, c, nu, kB_T)
-    
+    collide_forced(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega_S_coeff, N_vels, w, c, nu, kB_T)
+    #collide_forced2(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c)
     # Stream populations
     stream_closed(pops_pre, pops_post, Nx, Ny, Nz, 
                   N_vels, c, inv_cx_indx, inv_cy_indx, inv_cz_indx)
