@@ -94,7 +94,7 @@ f_dist_width = 2 # width of the surface gaussian force distribution function [la
 
 
 # Fluid
-nu = 0 # kinematic viscosity [m2 s-1]
+nu = 1/6 # kinematic viscosity [m2 s-1]
 rho_0 = 1.0 # initial density [kg m-3]
 mu = rho_0*nu # dynamic viscosity [kg m-1 s-1]
 
@@ -261,6 +261,11 @@ def save_marker_data(step, marker_pos_hist, marker_vel_hist, marker_f_hist, N_ma
 
 @nb.jit(nopython=True, fastmath=True)
 def resolve_particle_collisions(marker_pos, marker_vel, D_particle):
+    """ This function computes the 3D collision response between two spherical particles.
+    It only works for now for two identical particles : same mass, same radius.
+    It works for different initial speeds.
+    It doesn't work for more than two particles, neither for particle-wall interaction.
+    """
     R = D_particle / 2.0
     min_dist_sq = (2.0 * R) ** 2
     
@@ -329,17 +334,20 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
     marker_f_hist = np.empty_like(marker_pos_hist)
     fluid_mass_hist = np.empty(Nt, dtype=np.float64)
 
-    
-    # marker_vel[0, 0] = 5 #initial force marker 1
+    # add initial force to particles
+    marker_f[0, 0] = 5 # initial force marker 1
     marker_f[1, 0] = 0 # initial force marker 2
 
     iterations = tqdm.tqdm(range(Nt)) # initialise progress bar
     start_time = time.perf_counter()
+    
     for t in iterations:
-        # print(marker_f)
+        
+        # remove force after 100 steps (frame 2)
         if t>=100:
-            marker_f[0, 0] = 0 #initial force marker 1
-            marker_f[1, 0] = 0 # initial force marker 2
+            marker_f[0, 0] = 0 # update force marker 1
+            marker_f[1, 0] = 0 # update force marker 2
+        
         if np.isnan(u_mag_sq).any():
             raise RuntimeError(f'Unrealistic velocities: t={t}')
         
@@ -363,7 +371,7 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
         
         # Integrate boundary markers
         # marker_pos += marker_vel # since dt=1
-        print(marker_vel)
+        
         # elastic chock
         resolve_particle_collisions(marker_pos, marker_vel, D_particle)
         
