@@ -52,6 +52,7 @@ import warnings
 import numpy as np
 import numba as nb
 import matplotlib.pyplot as plt
+import imageio
 
 from forced_LBGK_lib import get_LBM_consts, initialise_pops, update_LBM_pops_closed#, update_LBM_pops_closed_combined
 from multi_marker_IBM_lib import gaus_consts, gaus_dist, dual_gaus_consts, dual_gaus_dist, plot_gaus_dist, IB_force_density, interpolate_marker_vels
@@ -65,16 +66,21 @@ max_mem_avail = 12.0e9 # maximum available memory [bytes]
 # Graphing and Outputs
 show_gaus_dist = False # plot the y distribution of the force distribution function
 live_flow_plot = True # plot the flow field during the simulation
-N_outputs = 2 # n.o. times to plot the solution field (only if live_flow_plot=True)
+N_outputs = 10 # n.o. times to plot the solution field (only if live_flow_plot=True)
 show_mass = False # plot the total fluid mass over the simulation duration - can be useful for identifying instabilities (should remain constant)
 
 
 # Geometry
-D_particle = 7 # number of lattice points across the particle diameter
-r_particle = D_particle/2 # particle radius
+D_particle1 = 7 # number of lattice points across the particle diameter
+D_particle2 = 10
+D_particle3 = 4
+D_particles = [D_particle1, D_particle2, D_particle3] # list of particle diameters
+
+r_particles = [D/2 for D in D_particles] # list of particle radii
+
 spacing_mutl = 10 # control the spacing between the particle and the domain walls
 
-Nx = int(spacing_mutl*D_particle+1) # simulation domain length
+Nx = int(spacing_mutl*D_particle1+1) # simulation domain length
 Ny = Nx # simulation domain height
 Nz = Nx # simulation domain depth
 n_lattice = Nx*Ny*Nz # total n.o. fluid nodes
@@ -82,9 +88,9 @@ n_lattice = Nx*Ny*Nz # total n.o. fluid nodes
 cx_particle = (Nx-1)/2 # particle initial x position
 cy_particle = (Ny-1)/2 # particle initial y position
 cz_particle = (Nz-1)/2 # particle initial z position
-N_markers = 1 # number of particle markers - need to offset initial positions for anything to happen when increasing this from 1
+N_markers = 3 # number of particle markers - need to offset initial positions for anything to happen when increasing this from 1
 
-stop_dist = D_particle # minimum distance from the particle to the wall before the simulation is stopped
+stop_dist = D_particle1 # minimum distance from the particle to the wall before the simulation is stopped
 stopping_lims = [[stop_dist, Nx-1-stop_dist], [stop_dist, Ny-1-stop_dist], [stop_dist, Nz-1-stop_dist]]
 
 
@@ -97,20 +103,19 @@ f_dist_width = 2 # width of the surface gaussian force distribution function [la
 nu = 1/6 # kinematic viscosity [m2 s-1]
 rho_0 = 1.0 # initial density [kg m-3]
 mu = rho_0*nu # dynamic viscosity [kg m-1 s-1]
-
+rhos = np.ones(N_markers, dtype=np.float64) * 1.14 * rho_0 # list of particle densities (assumed to be the same for now)
 
 # Diffusion - would probably be defined by a temperature
-# F_brownian_scale = 5 # sample parameter for example only - the simulation may go unstable if the marker force is too large
+F_brownian_scale = 5 # sample parameter for example only - the simulation may go unstable if the marker force is too large
 
 
 
 #%% Solver Parameters
 sim_time = 1000 # simulation time [s] - adjust accordingly
 Nt = int(sim_time) # number of time steps (since dt=1)
-kB_T = 0* 0.02
 
 outevery = int(Nt/N_outputs) # generate an output every this many steps
-# outevery = 2
+outevery = 10
 
 LBM_consts = get_LBM_consts(nu)
 inv_cs2 = LBM_consts['inv_cs2']
@@ -139,24 +144,20 @@ else:
 
 
 #%% Brownian Motion
-
-kb_T = 1 #k_B T
-gamma = 6*np.pi*mu*r_particle # drag coefficient
-
 @nb.jit(nopython=True, parallel=True, fastmath=True)
-def brownian_forcing(N_markers, marker_f):
+def brownian_forcing(F_brownian_scale, N_markers, marker_f):
     """
-    Brownian forcing function.
+    A sample marker forcing function for example only.
     
     Large marker forces can cause instabilities.
     """
-    # print(marker_vel, np.size(marker_vel))
-
     for m in nb.prange(N_markers):
         np.int64(m)
-        marker_f[m, 0] = np.random.normal(0, 1)*(2*gamma*kb_T)**(1/2) # dt = 1
-        marker_f[m, 1] = np.random.normal(0, 1)*(2*gamma*kb_T)**(1/2) # dt = 1
-        marker_f[m, 2] = np.random.normal(0, 1)*(2*gamma*kb_T)**(1/2) # dt = 1
+        marker_f[m, 0] = 0 # np.random.normal(0, 1)*F_brownian_scale
+        marker_f[m, 1] = 0 # np.random.normal(0, 1)*F_brownian_scale
+        marker_f[m, 2] = 0 # np.random.normal(0, 1)*F_brownian_scale
+
+
 
 #%% Initialisation Functions
 def initialise_fluid_arrays(Nx, Ny, Nz, rho_0, rho, u, u_mag_sq, F, pops_pre, pops_post):
@@ -189,28 +190,67 @@ pops_post = np.empty_like(pops_pre) # second DVDF array for efficient data writi
 
 
 # IBM Setup
+# if IB_kernel == 'standard gaussian':
+#     r_gaus = r_particle2
+#     sigma, A, r_cutoff = gaus_consts(r_gaus)
+#     r_cutoff_outer = r_cutoff
+#     r_cutoff_inner = 0
+#     dist_func = gaus_dist
+# elif IB_kernel == 'dual gaussian':
+#     r_gaus = max(r_particle2-f_dist_width/2, 0) # surface gaussian force distribution function radial location
+#     sigma, A, r_cutoff = dual_gaus_consts(f_dist_width, r_gaus)
+#     r_cutoff_outer = r_gaus+r_cutoff
+#     r_cutoff_inner = max(r_gaus-r_cutoff, 0)
+#     dist_func = dual_gaus_dist
+# r_cutoff_outer_sq = r_cutoff_outer*r_cutoff_outer
+# r_cutoff_inner_sq = r_cutoff_inner*r_cutoff_inner
+
+# --- IBM Setup pour particules hétérogènes ---
+
+sigma = np.empty(N_markers, dtype=np.float64)
+A = np.empty(N_markers, dtype=np.float64)
+r_cutoff = np.empty(N_markers, dtype=np.float64)
+r_gaus = np.empty(N_markers, dtype=np.float64)
+
+for m in range(N_markers):
+    if IB_kernel == 'standard gaussian':
+        r_gaus[m] = r_particles[m]
+        sigma[m], A[m], r_cutoff[m] = gaus_consts(r_gaus[m])
+        dist_func = gaus_dist
+    elif IB_kernel == 'dual gaussian':
+        r_gaus[m] = max(r_particles[m] - f_dist_width / 2.0, 0.0)
+        sigma[m], A[m], r_cutoff[m] = dual_gaus_consts(f_dist_width, r_gaus[m])
+        dist_func = dual_gaus_dist
+
+# Rayon de coupure maximal pour la réservation du voisinage (tableau 3D)
 if IB_kernel == 'standard gaussian':
-    r_gaus = r_particle
-    sigma, A, r_cutoff = gaus_consts(r_gaus)
-    r_cutoff_outer = r_cutoff
-    r_cutoff_inner = 0
-    dist_func = gaus_dist
-elif IB_kernel == 'dual gaussian':
-    r_gaus = max(r_particle-f_dist_width/2, 0) # surface gaussian force distribution function radial location
-    sigma, A, r_cutoff = dual_gaus_consts(f_dist_width, r_gaus)
-    r_cutoff_outer = r_gaus+r_cutoff
-    r_cutoff_inner = max(r_gaus-r_cutoff, 0)
-    dist_func = dual_gaus_dist
-r_cutoff_outer_sq = r_cutoff_outer*r_cutoff_outer
-r_cutoff_inner_sq = r_cutoff_inner*r_cutoff_inner
+    r_cutoff_outer = np.max(r_cutoff)
+    r_cutoff_inner = 0.0
+else:
+    r_cutoff_outer = np.max(r_gaus + r_cutoff)
+    r_cutoff_inner = max(np.max(r_gaus - r_cutoff), 0.0)
 
-
+r_cutoff_outer_sq = r_cutoff_outer ** 2
+r_cutoff_inner_sq = r_cutoff_inner ** 2
 
 # IBM Arrays
 init_marker_pos = np.empty((N_markers, 3), dtype=np.float64) # initial marker positions
-init_marker_pos[:, 0] = cx_particle
-init_marker_pos[:, 1] = cy_particle
-init_marker_pos[:, 2] = cz_particle
+
+# marker 1
+init_marker_pos[0, 0] = cx_particle - 2*D_particle1
+init_marker_pos[0, 1] = cy_particle
+init_marker_pos[0, 2] = cz_particle
+
+# marker 2
+init_marker_pos[1, 0] = cx_particle + 2*D_particle2
+init_marker_pos[1, 1] = cy_particle
+init_marker_pos[1, 2] = cz_particle
+
+# marker 3
+init_marker_pos[2, 0] = cx_particle 
+init_marker_pos[2, 1] = cy_particle - 2*D_particle3
+init_marker_pos[2, 2] = cz_particle
+
 marker_pos = np.empty_like(init_marker_pos) # Lagrangian boundary marker positions
 marker_vel = np.empty_like(marker_pos) # Lagrangian boundary marker velocities
 marker_f = np.empty_like(marker_pos) # Lagrangian boundary marker forces
@@ -230,16 +270,16 @@ initialise_IBM(init_marker_pos, marker_pos, marker_vel, marker_f)
 
 #%% Force Distribution Function Analysis
 if show_gaus_dist:
-    plot_gaus_dist(Ny, dist_func, r_particle, f_dist_width, r_gaus, sigma, A, r_cutoff, r_cutoff_outer, IB_kernel, N_markers, marker_pos)
+    plot_gaus_dist(Ny, dist_func, r_particle2, f_dist_width, r_gaus, sigma, A, r_cutoff, r_cutoff_outer, IB_kernel, N_markers, marker_pos)
 
 
 
 #%% Solver Loop
-print(f'Particle Diameter: {D_particle}\nSpacing Multiplier: {spacing_mutl}\nNx, Ny, Nz: ({Nx}, {Ny}, {Nz})\nNumber of Lattice Points: {n_lattice}')
+print(f'Particle 1 Diameter: {D_particle1}\nSpacing Multiplier: {spacing_mutl}\nNx, Ny, Nz: ({Nx}, {Ny}, {Nz})\nNumber of Lattice Points: {n_lattice}')
 print(f'Boundary Representation: immersed boundary method ({IB_kernel})')
 if IB_kernel == 'dual gaussian':
     print(f'Distribution Width: {f_dist_width}')
-print(f'Kinematic Viscosity: {nu:.4f}\nInitial Fluid Density: {rho_0}\nForcing Scale: {(np.pi*D_particle*kb_T)**(1/2)}')
+print(f'Kinematic Viscosity: {nu:.4f}\nInitial Fluid Density: {rho_0}\nForcing Scale: {F_brownian_scale}')
 print(f'Relaxation Factor (BGK): {tau:.4f}\n')
 
 
@@ -257,10 +297,92 @@ def save_marker_data(step, marker_pos_hist, marker_vel_hist, marker_f_hist, N_ma
         marker_f_hist[m, step, 1] = marker_f[m, 1]
         marker_f_hist[m, step, 2] = marker_f[m, 2]
 
+@nb.jit(nopython=True, fastmath=True)
+def resolve_particle_collisions(marker_pos, marker_vel, D_particles, rhos):
+    """ This function computes the 3D collision response between two spherical particles.
+    It works for N  particles : for whatever mass, radius, initial speed.
+    It doesn't work when there is more than 1 collision at a time for the same particle.
+    """
 
+    collided = np.zeros(N_markers, dtype=nb.boolean)
+    
+    for i in range(N_markers):
+        
+        if collided[i]:
+            
+            continue
+        
+        for j in range(i+1, N_markers):
+            
+            if collided[j]:
+                continue
+            
+            mi = 4/3 * np.pi * (D_particles[i] / 2.0) ** 3 * rhos[i] # mass of particle i
+            mj = 4/3 * np.pi * (D_particles[j] / 2.0) ** 3 * rhos[j] # mass of particle j
+            Ri = D_particles[i] / 2.0 # radius of particle i
+            Rj = D_particles[j] / 2.0 # radius of particle j
+            min_dist_sq = (Ri + Rj) ** 2
+            
+            rx = marker_pos[i, 0] - marker_pos[j, 0]
+            ry = marker_pos[i, 1] - marker_pos[j, 1]
+            rz = marker_pos[i, 2] - marker_pos[j, 2]
+            
+            vx = marker_vel[i, 0] - marker_vel[j, 0]
+            vy = marker_vel[i, 1] - marker_vel[j, 1]
+            vz = marker_vel[i, 2] - marker_vel[j, 2]
+            
+            dist_sq = rx**2 + ry**2 + rz**2
+            a = vx**2 + vy**2 + vz**2
+            b = 2.0 * (rx*vx + ry*vy + rz*vz)
+            c = dist_sq - min_dist_sq
+            
+            if c < 0.0:
+                raise ValueError("Particles are overlapping at the start of the time step.")
+            
+            if a > 0.0 and b < 0.0 and (b**2 - 4.0*a*c) >= 0.0:
+                delta_t = (-b - np.sqrt(b**2 - 4.0*a*c)) / (2.0 * a)
+                
+                if 0.0 <= delta_t <= 1.0:
+                    rx_impact = rx + vx * delta_t
+                    ry_impact = ry + vy * delta_t
+                    rz_impact = rz + vz * delta_t
+                    dist_impact = np.sqrt(rx_impact**2 + ry_impact**2 + rz_impact**2)
+                    
+                    if dist_impact > 0.0:
+                        nx, ny, nz = rx_impact / dist_impact, ry_impact / dist_impact, rz_impact / dist_impact
+                        v_dot_n = vx * nx + vy * ny + vz * nz
+                        
+                        v0_x, v0_y, v0_z = marker_vel[i, 0], marker_vel[i, 1], marker_vel[i, 2]
+                        v1_x, v1_y, v1_z = marker_vel[j, 0], marker_vel[j, 1], marker_vel[j, 2]
+                        
+                        marker_vel[i, 0] -= 2 * mj / (mi + mj) * v_dot_n * nx
+                        marker_vel[i, 1] -= 2 * mj / (mi + mj) * v_dot_n * ny
+                        marker_vel[i, 2] -= 2 * mj / (mi + mj) * v_dot_n * nz
+                        
+                        marker_vel[j, 0] += 2 * mi / (mi + mj) * v_dot_n * nx
+                        marker_vel[j, 1] += 2 * mi / (mi + mj) * v_dot_n * ny
+                        marker_vel[j, 2] += 2 * mi / (mi + mj) * v_dot_n * nz
+
+                        marker_pos[i, 0] += v0_x * delta_t + marker_vel[i, 0] * (1.0 - delta_t)
+                        marker_pos[i, 1] += v0_y * delta_t + marker_vel[i, 1] * (1.0 - delta_t)
+                        marker_pos[i, 2] += v0_z * delta_t + marker_vel[i, 2] * (1.0 - delta_t)
+                        
+                        marker_pos[j, 0] += v1_x * delta_t + marker_vel[j, 0] * (1.0 - delta_t)
+                        marker_pos[j, 1] += v1_y * delta_t + marker_vel[j, 1] * (1.0 - delta_t)
+                        marker_pos[j, 2] += v1_z * delta_t + marker_vel[j, 2] * (1.0 - delta_t)
+                        
+                        collided[i] = True
+                        collided[j] = True
+                        break
+    
+    for i in range(N_markers):
+        if not collided[i]:
+            marker_pos[i, 0] += marker_vel[i, 0]
+            marker_pos[i, 1] += marker_vel[i, 1]
+            marker_pos[i, 2] += marker_vel[i, 2]
 
 def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos, marker_vel, marker_f, marker_nh, marker_nh_size, 
-                 Nt, Nx, Ny, Nz, n_lattice, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, dist_func, r_gaus, sigma, A, stopping_lims, 
+                 Nt, F_brownian_scale, Nx, Ny, Nz, n_lattice, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, dist_func, r_gaus, sigma, A, stopping_lims, 
                  inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, live_flow_plot, outevery):
     
     break_cond = False
@@ -272,15 +394,29 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
     marker_f_hist = np.empty_like(marker_pos_hist)
     fluid_mass_hist = np.empty(Nt, dtype=np.float64)
 
+    # add initial force to particles
+    marker_f[0, 0] = 5 # initial force marker 1
+    marker_f[1, 0] = 0 # initial force marker 2
+    marker_f[2, 1] = 2 # initial force marker 3
+
+    
     iterations = tqdm.tqdm(range(Nt)) # initialise progress bar
     start_time = time.perf_counter()
+    
+    frames = []
     for t in iterations:
+        
+        # remove force after 100 steps (frame 2)
+        if t>=100:
+            marker_f[0, 0] = 0 # update force marker 1
+            marker_f[1, 0] = 0 # update force marker 2
+            marker_f[2, 1] = 0 # update force marker 3
+        
         if np.isnan(u_mag_sq).any():
             raise RuntimeError(f'Unrealistic velocities: t={t}')
         
-        
         # Calculate marker forces
-        #brownian_forcing(N_markers, marker_f)
+        # brownian_forcing(F_brownian_scale, N_markers, marker_f)
         
         # Calculate forcing due to IB markers
         int_err = IB_force_density(Nx, Ny, Nz, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, F, 
@@ -292,14 +428,16 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
         #                                 N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx)
         update_LBM_pops_closed(pops_pre, pops_post, F, rho, u, u_mag_sq, Nx, Ny, Nz, 
                                inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, 
-                               N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, nu, kB_T)
+                               N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx)
         
         # Interpolate boundary marker velocities
         interpolate_marker_vels(u, N_markers, marker_vel, marker_nh, marker_nh_size)
         
         # Integrate boundary markers
-        marker_pos += marker_vel # since dt=1
+        # marker_pos += marker_vel # since dt=1
         
+        # elastic chock
+        resolve_particle_collisions(marker_pos, marker_vel, D_particles, rhos)
         
         # Save marker data
         save_marker_data(t, marker_pos_hist, marker_vel_hist, marker_f_hist, N_markers, marker_pos, marker_vel, marker_f)
@@ -314,13 +452,46 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
             inbounds_x = stopping_lims[0][0] <= marker_pos[m, 0] <= stopping_lims[0][1]
             inbounds_y = stopping_lims[1][0] <= marker_pos[m, 1] <= stopping_lims[1][1]
             inbounds_z = stopping_lims[2][0] <= marker_pos[m, 2] <= stopping_lims[2][1]
-            if not (inbounds_x and inbounds_y and inbounds_z):
-                break_cond = True
-                save_data = True
-                break
-            elif m == N_markers-1:
+            # if not (inbounds_x and inbounds_y and inbounds_z):
+            #     break_cond = True
+            #     save_data = True
+            #     break
+            if m == N_markers-1:
                 save_data = (t%outevery == 0) or (t == Nt-1)
         
+        
+        # Output flow field at particle cross-section
+        # if save_data and live_flow_plot:
+        #     u_mag_sq_curr = np.max(u_mag_sq)
+        #     if u_mag_sq_curr > u_mag_sq_max:
+        #         u_mag_sq_max = u_mag_sq_curr
+            
+        #     m = 0 # only plot the first marker
+        #     z_slice = min(max(int(round(marker_pos[m, 2])), 0), Nz-1)
+            
+        #     plt.figure(figsize=(5, 4))
+        #     im = plt.imshow(np.sqrt(u_mag_sq[:, :, z_slice]).T, cmap='viridis', origin='lower', vmin=0, vmax=u_mag_sq_max**0.5)
+        #     # im = plt.imshow(u[:, :, z_slice, 0].T, cmap='viridis', origin='lower')
+        #     # im = plt.imshow(rho[:, :, z_slice].T, cmap='viridis', origin='lower')
+        #     # im = plt.imshow(F[:, :, z_slice, 0].T, cmap='viridis', origin='lower')
+        #     plt.colorbar(im, label='Velocity Magnitude')
+            
+        #     for m in range(N_markers):
+        #         plt.plot(marker_pos_hist[m, :t+1, 0], marker_pos_hist[m, :t+1, 1], 'r', alpha=0.5)
+        #         plt.plot(init_marker_pos[m, 0], init_marker_pos[m, 1], 'xr')
+                
+        #         circle = plt.Circle((marker_pos[m, 0], marker_pos[m, 1]), r_particles[m], color='red', fill=False, linewidth=1.5)
+        #         plt.gca().add_patch(circle)
+            
+        #     plt.xlim([0, Nx-1])
+        #     plt.ylim([0, Ny-1])
+            
+        #     plt.title(f'3D Particle Diffusion - {IB_kernel} IBM\nZ Position = {z_slice}, t = {t}')
+        #     plt.xlabel('X Position')
+        #     plt.ylabel('Y Position')
+        #     plt.tight_layout()
+        #     # plt.savefig(f'{t}_diff_ani.png')
+        #     plt.show()
         
         # Output flow field at particle cross-section
         if save_data and live_flow_plot:
@@ -328,36 +499,38 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
             if u_mag_sq_curr > u_mag_sq_max:
                 u_mag_sq_max = u_mag_sq_curr
             
-            m = 0 # only plot the first marker
+            m = 0
             z_slice = min(max(int(round(marker_pos[m, 2])), 0), Nz-1)
             
-            plt.figure(figsize=(5, 4))
-            im = plt.imshow(np.sqrt(u_mag_sq[:, :, z_slice]).T, cmap='viridis', origin='lower', vmin=0, vmax=u_mag_sq_max**0.5)
-            # im = plt.imshow(u[:, :, z_slice, 0].T, cmap='viridis', origin='lower')
-            # im = plt.imshow(rho[:, :, z_slice].T, cmap='viridis', origin='lower')
-            # im = plt.imshow(F[:, :, z_slice, 0].T, cmap='viridis', origin='lower')
+            fig, ax = plt.subplots(figsize=(5, 4))
+            im = ax.imshow(np.sqrt(u_mag_sq[:, :, z_slice]).T, cmap='viridis', origin='lower', vmin=0, vmax=u_mag_sq_max**0.5)
             plt.colorbar(im, label='Velocity Magnitude')
             
-            for m in range(N_markers):
-                plt.plot(marker_pos_hist[m, :t+1, 0], marker_pos_hist[m, :t+1, 1], 'r', alpha=0.5)
-                plt.plot(init_marker_pos[m, 0], init_marker_pos[m, 1], 'xr')
-                
-                circle = plt.Circle((marker_pos[m, 0], marker_pos[m, 1]), r_particle, color='red', fill=False, linewidth=1.5)
-                plt.gca().add_patch(circle)
+            for m_idx in range(N_markers):
+                ax.plot(marker_pos_hist[m_idx, :t+1, 0], marker_pos_hist[m_idx, :t+1, 1], 'r', alpha=0.5)
+                ax.plot(init_marker_pos[m_idx, 0], init_marker_pos[m_idx, 1], 'xr')
+                circle = plt.Circle((marker_pos[m_idx, 0], marker_pos[m_idx, 1]), r_particles[m_idx], color='red', fill=False, linewidth=1.5)
+                ax.add_patch(circle)
             
-            plt.xlim([0, Nx-1])
-            plt.ylim([0, Ny-1])
-            
-            plt.title(f'3D Particle Diffusion - {IB_kernel} IBM\nZ Position = {z_slice}, t = {t}')
-            plt.xlabel('X Position')
-            plt.ylabel('Y Position')
+            ax.set_xlim([0, Nx-1])
+            ax.set_ylim([0, Ny-1])
+            ax.set_title(f'3D Particle Diffusion - {IB_kernel} IBM\nZ Position = {z_slice}, t = {t}')
+            ax.set_xlabel('X Position')
+            ax.set_ylabel('Y Position')
             plt.tight_layout()
-            # plt.savefig(f'{t}_diff_ani.png')
-            plt.show()
+            
+            # Enregistrement de l'image en mémoire pour le GIF
+            fig.canvas.draw()
+            image = np.frombuffer(fig.canvas.buffer_rgba(), dtype='uint8')
+            image = image.reshape(fig.canvas.get_width_height()[::-1] + (4,))[:, :, :3]
+            frames.append(image)
+            plt.close(fig)
         
         if break_cond:
             break
-
+    
+    if live_flow_plot and len(frames) > 0:
+        imageio.mimsave('particle_diffusion.gif', frames, fps=5, loop=0)
     end_time = time.perf_counter()
     loop_wt = end_time - start_time
     cell_updates = n_lattice*(t+1)
@@ -381,7 +554,7 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
 
 
 sim_res = run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos, marker_vel, marker_f, marker_nh, marker_nh_size, 
-                       Nt, Nx, Ny, Nz, n_lattice, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, dist_func, r_gaus, sigma, A, stopping_lims, 
+                       Nt, F_brownian_scale, Nx, Ny, Nz, n_lattice, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, dist_func, r_gaus, sigma, A, stopping_lims, 
                        inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, live_flow_plot, outevery)
 
 marker_pos_hist, marker_vel_hist, marker_f_hist, fluid_mass_hist, simtime_reached = sim_res
