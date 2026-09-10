@@ -14,111 +14,184 @@ import matplotlib.pyplot as plt
 
 # not parallelised by default - race condition present mean that the solution may not be accurate
 # (different markers may try to spread force to the same fluid node at the same time)
+# @nb.jit(nopython=True, parallel=False, fastmath=True)
+# def IB_force_density(Nx, Ny, Nz, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, F, dist_func, r_gaus, sigma, A, 
+#                      N_markers, marker_pos, marker_f, marker_nh, marker_nh_size, int_err, cell_vol=1.0):
+#     """
+#     Spreads the Lagrangian marker force to the Eulerian fluid lattice using a
+#     specified kernel.
+
+#     Parameters
+#     ----------
+#     Nx : int
+#         number of fluid cells in the x direction.
+#     Ny : int
+#         number of fluid cells in the y direction.
+#     Nz : int
+#         number of fluid cells in the z direction.
+#     r_cutoff_outer : float
+#         force distribution function outer cutoff distance.
+#     r_cutoff_outer_sq : float
+#         force distribution function squared outer cutoff distance.
+#     r_cutoff_inner_sq : float
+#         force distribution function squared inner cutoff distance.
+#     F : ndarray
+#         fluid force density field. ndims=4, dtype=float
+#     dist_func : function
+#         force distribution function.
+#     r_gaus : float
+#         gaussian function radial offset (dual gaussian kernel only).
+#     sigma : float
+#         gaussian standard deviation.
+#     A : float
+#         force distribution function normalisation coefficient.
+#     N_markers : int
+#         number of Lagrangian boundary markers
+#     marker_pos : ndarray
+#         lagrangian marker position. ndims=2, dtype=float
+#     marker_f : ndarray
+#         lagrangian marker force. ndims=2, dtype=float
+#     marker_nh : ndarray
+#         lagrangian marker fluid lattice neighborhood points, distances, and 
+#         weightings. ndims=3, dtype=float
+#     marker_nh_size : ndarray
+#         lagrangian marker fluid lattice neighborhood size. ndims=1, dtype=int
+#     int_err : float
+#         force distribution function integration error.
+#     cell_vol : float, optional
+#         fluid lattice cell volume. The default is 1.0.
+
+#     Returns
+#     -------
+#     int_err : float
+#         force distribution function integration error.
+#     """
+    
+#     F[:] = 0.0 # reset fluid body force density
+#     inv_cell_vol = 1/cell_vol
+    
+#     for m in nb.prange(N_markers):
+#         np.int64(m)
+#         curr_pos_x, curr_pos_y, curr_pos_z = marker_pos[m, 0], marker_pos[m, 1], marker_pos[m, 2]
+        
+#         # Only loop over lattice points which are near the boundary markers
+#         x_min, x_max = np.int64(max(np.floor(curr_pos_x-r_cutoff_outer), 0)), np.int64(min(np.ceil(curr_pos_x+r_cutoff_outer), Nx-1))
+#         y_min, y_max = np.int64(max(np.floor(curr_pos_y-r_cutoff_outer), 0)), np.int64(min(np.ceil(curr_pos_y+r_cutoff_outer), Ny-1))
+#         z_min, z_max = np.int64(max(np.floor(curr_pos_z-r_cutoff_outer), 0)), np.int64(min(np.ceil(curr_pos_z+r_cutoff_outer), Nz-1))
+        
+#         weighting_sum = 0.0
+#         count = 0
+#         for x_i in range(x_min, x_max+1):
+#             rel_x = x_i-curr_pos_x
+#             rel_x_sq = rel_x*rel_x
+#             if rel_x_sq > r_cutoff_outer_sq:
+#                 continue
+#             for y_i in range(y_min, y_max+1):
+#                 rel_y = y_i-curr_pos_y
+#                 rel_xy_sq = rel_y*rel_y + rel_x_sq
+#                 if rel_xy_sq > r_cutoff_outer_sq:
+#                     continue
+#                 for z_i in range(z_min, z_max+1):
+#                     rel_z = z_i-curr_pos_z
+#                     rel_xyz_sq = rel_z*rel_z + rel_xy_sq
+#                     if r_cutoff_inner_sq <= rel_xyz_sq <= r_cutoff_outer_sq:
+#                         # Calculate the force distribution weighting
+#                         r_mag = rel_xyz_sq**0.5
+#                         f_dist = dist_func(r_mag, r_gaus, sigma, A)
+#                         weighting_sum += f_dist
+#                         f_dist_div_cell_vol = f_dist*inv_cell_vol
+                        
+#                         # Spread the boundary marker force to the fluid
+#                         F[x_i, y_i, z_i, 0] += marker_f[m, 0]*f_dist_div_cell_vol # race condition if run in parallel - be careful
+#                         F[x_i, y_i, z_i, 1] += marker_f[m, 1]*f_dist_div_cell_vol
+#                         F[x_i, y_i, z_i, 2] += marker_f[m, 2]*f_dist_div_cell_vol
+                        
+#                         # Save the current marker neighborhood data
+#                         marker_nh[m, 0, count] = x_i
+#                         marker_nh[m, 1, count] = y_i
+#                         marker_nh[m, 2, count] = z_i
+#                         marker_nh[m, 3, count] = r_mag
+#                         marker_nh[m, 4, count] = f_dist
+#                         count += 1
+#         marker_nh_size[m] = count
+        
+#         sum_err = abs(1.0-weighting_sum)
+#         if (sum_err > int_err) and (1 <= m <= N_markers-2):
+#             int_err = sum_err
+    
+#     return int_err
+
 @nb.jit(nopython=True, parallel=False, fastmath=True)
-def IB_force_density(Nx, Ny, Nz, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, F, dist_func, r_gaus, sigma, A, 
-                     N_markers, marker_pos, marker_f, marker_nh, marker_nh_size, int_err, cell_vol=1.0):
+def IB_force_density(Nx, Ny, Nz, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, F, dist_func, 
+                     r_gaus, sigma, A, N_markers, marker_pos, marker_f, marker_nh, marker_nh_size, 
+                     int_err, cell_vol=1.0):
     """
     Spreads the Lagrangian marker force to the Eulerian fluid lattice using a
-    specified kernel.
-
-    Parameters
-    ----------
-    Nx : int
-        number of fluid cells in the x direction.
-    Ny : int
-        number of fluid cells in the y direction.
-    Nz : int
-        number of fluid cells in the z direction.
-    r_cutoff_outer : float
-        force distribution function outer cutoff distance.
-    r_cutoff_outer_sq : float
-        force distribution function squared outer cutoff distance.
-    r_cutoff_inner_sq : float
-        force distribution function squared inner cutoff distance.
-    F : ndarray
-        fluid force density field. ndims=4, dtype=float
-    dist_func : function
-        force distribution function.
-    r_gaus : float
-        gaussian function radial offset (dual gaussian kernel only).
-    sigma : float
-        gaussian standard deviation.
-    A : float
-        force distribution function normalisation coefficient.
-    N_markers : int
-        number of Lagrangian boundary markers
-    marker_pos : ndarray
-        lagrangian marker position. ndims=2, dtype=float
-    marker_f : ndarray
-        lagrangian marker force. ndims=2, dtype=float
-    marker_nh : ndarray
-        lagrangian marker fluid lattice neighborhood points, distances, and 
-        weightings. ndims=3, dtype=float
-    marker_nh_size : ndarray
-        lagrangian marker fluid lattice neighborhood size. ndims=1, dtype=int
-    int_err : float
-        force distribution function integration error.
-    cell_vol : float, optional
-        fluid lattice cell volume. The default is 1.0.
-
-    Returns
-    -------
-    int_err : float
-        force distribution function integration error.
+    specified kernel with individual particle parameters.
     """
     
     F[:] = 0.0 # reset fluid body force density
-    inv_cell_vol = 1/cell_vol
+    inv_cell_vol = 1.0 / cell_vol
     
-    for m in nb.prange(N_markers):
-        np.int64(m)
+    for m in range(N_markers):
         curr_pos_x, curr_pos_y, curr_pos_z = marker_pos[m, 0], marker_pos[m, 1], marker_pos[m, 2]
         
-        # Only loop over lattice points which are near the boundary markers
-        x_min, x_max = np.int64(max(np.floor(curr_pos_x-r_cutoff_outer), 0)), np.int64(min(np.ceil(curr_pos_x+r_cutoff_outer), Nx-1))
-        y_min, y_max = np.int64(max(np.floor(curr_pos_y-r_cutoff_outer), 0)), np.int64(min(np.ceil(curr_pos_y+r_cutoff_outer), Ny-1))
-        z_min, z_max = np.int64(max(np.floor(curr_pos_z-r_cutoff_outer), 0)), np.int64(min(np.ceil(curr_pos_z+r_cutoff_outer), Nz-1))
+        # Récupération des paramètres gaussiens propres au marqueur m
+        r_gaus_m = r_gaus[m]
+        sigma_m = sigma[m]
+        A_m = A[m]
+        
+        # Bornes de recherche sur la grille autour du marqueur
+        x_min, x_max = np.int64(max(np.floor(curr_pos_x - r_cutoff_outer), 0)), np.int64(min(np.ceil(curr_pos_x + r_cutoff_outer), Nx - 1))
+        y_min, y_max = np.int64(max(np.floor(curr_pos_y - r_cutoff_outer), 0)), np.int64(min(np.ceil(curr_pos_y + r_cutoff_outer), Ny - 1))
+        z_min, z_max = np.int64(max(np.floor(curr_pos_z - r_cutoff_outer), 0)), np.int64(min(np.ceil(curr_pos_z + r_cutoff_outer), Nz - 1))
         
         weighting_sum = 0.0
         count = 0
-        for x_i in range(x_min, x_max+1):
-            rel_x = x_i-curr_pos_x
-            rel_x_sq = rel_x*rel_x
+        
+        for x_i in range(x_min, x_max + 1):
+            rel_x = x_i - curr_pos_x
+            rel_x_sq = rel_x * rel_x
             if rel_x_sq > r_cutoff_outer_sq:
                 continue
-            for y_i in range(y_min, y_max+1):
-                rel_y = y_i-curr_pos_y
-                rel_xy_sq = rel_y*rel_y + rel_x_sq
+                
+            for y_i in range(y_min, y_max + 1):
+                rel_y = y_i - curr_pos_y
+                rel_xy_sq = rel_y * rel_y + rel_x_sq
                 if rel_xy_sq > r_cutoff_outer_sq:
                     continue
-                for z_i in range(z_min, z_max+1):
-                    rel_z = z_i-curr_pos_z
-                    rel_xyz_sq = rel_z*rel_z + rel_xy_sq
+                    
+                for z_i in range(z_min, z_max + 1):
+                    rel_z = z_i - curr_pos_z
+                    rel_xyz_sq = rel_z * rel_z + rel_xy_sq
+                    
                     if r_cutoff_inner_sq <= rel_xyz_sq <= r_cutoff_outer_sq:
-                        # Calculate the force distribution weighting
                         r_mag = rel_xyz_sq**0.5
-                        f_dist = dist_func(r_mag, r_gaus, sigma, A)
+                        
+                        # Évaluation du noyau avec les constantes du marqueur m
+                        f_dist = dist_func(r_mag, r_gaus_m, sigma_m, A_m)
                         weighting_sum += f_dist
-                        f_dist_div_cell_vol = f_dist*inv_cell_vol
+                        f_dist_div_cell_vol = f_dist * inv_cell_vol
                         
-                        # Spread the boundary marker force to the fluid
-                        F[x_i, y_i, z_i, 0] += marker_f[m, 0]*f_dist_div_cell_vol # race condition if run in parallel - be careful
-                        F[x_i, y_i, z_i, 1] += marker_f[m, 1]*f_dist_div_cell_vol
-                        F[x_i, y_i, z_i, 2] += marker_f[m, 2]*f_dist_div_cell_vol
+                        # Projection de la force lagrangienne sur le réseau eulérien
+                        F[x_i, y_i, z_i, 0] += marker_f[m, 0] * f_dist_div_cell_vol
+                        F[x_i, y_i, z_i, 1] += marker_f[m, 1] * f_dist_div_cell_vol
+                        F[x_i, y_i, z_i, 2] += marker_f[m, 2] * f_dist_div_cell_vol
                         
-                        # Save the current marker neighborhood data
+                        # Sauvegarde des données de voisinage du marqueur m
                         marker_nh[m, 0, count] = x_i
                         marker_nh[m, 1, count] = y_i
                         marker_nh[m, 2, count] = z_i
                         marker_nh[m, 3, count] = r_mag
                         marker_nh[m, 4, count] = f_dist
                         count += 1
+                        
         marker_nh_size[m] = count
         
-        sum_err = abs(1.0-weighting_sum)
-        if (sum_err > int_err) and (1 <= m <= N_markers-2):
+        sum_err = abs(1.0 - weighting_sum)
+        if sum_err > int_err:
             int_err = sum_err
-    
+            
     return int_err
 
 
