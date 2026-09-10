@@ -140,7 +140,7 @@ else:
 
 #%% Brownian Motion
 
-kb_T = 1 #k_B T
+# kb_T = 1 #k_B T
 gamma = 6*np.pi*mu*r_particle # drag coefficient
 
 @nb.jit(nopython=True, parallel=True, fastmath=True)

@@ -409,7 +409,7 @@ def collide_forced(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz,
                         x_star += e_hat[mk, q] * local_m_star[mk]
                     
                     # Reconstruction de l'équation de Boltzmann sur réseaux (post-collision) + forçage scalaire de Guo
-                    pops_post[i, j, k, q] = pops_pre[i, j, k, q] + np.sqrt(mu * local_rho * w[q]) * x_star + local_F_i[q] * omega_S_coeff
+                    pops_post[i, j, k, q] = local_f_eq[q] + np.sqrt(mu * local_rho * w[q]) * x_star + local_F_i[q] * omega_S_coeff
     
 
 @nb.jit(nopython=True, parallel=True, fastmath=True)
