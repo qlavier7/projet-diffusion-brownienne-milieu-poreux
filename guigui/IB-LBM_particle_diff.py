@@ -65,7 +65,7 @@ max_mem_avail = 12.0e9 # maximum available memory [bytes]
 # Graphing and Outputs
 show_gaus_dist = False # plot the y distribution of the force distribution function
 live_flow_plot = True # plot the flow field during the simulation
-N_outputs = 2 # n.o. times to plot the solution field (only if live_flow_plot=True)
+N_outputs = 40 # n.o. times to plot the solution field (only if live_flow_plot=True)
 show_mass = False # plot the total fluid mass over the simulation duration - can be useful for identifying instabilities (should remain constant)
 
 
@@ -100,13 +100,13 @@ mu = rho_0*nu # dynamic viscosity [kg m-1 s-1]
 
 
 # Diffusion - would probably be defined by a temperature
-# F_brownian_scale = 5 # sample parameter for example only - the simulation may go unstable if the marker force is too large
-
+kB_T = 0.01
 
 
 #%% Solver Parameters
 sim_time = 1000 # simulation time [s] - adjust accordingly
 Nt = int(sim_time) # number of time steps (since dt=1)
+
 
 outevery = int(Nt/N_outputs) # generate an output every this many steps
 # outevery = 2
@@ -138,24 +138,6 @@ else:
 
 
 #%% Brownian Motion
-
-kb_T = 1 #k_B T
-gamma = 6*np.pi*mu*r_particle # drag coefficient
-
-@nb.jit(nopython=True, parallel=True, fastmath=True)
-def brownian_forcing(N_markers, marker_f):
-    """
-    Brownian forcing function.
-    
-    Large marker forces can cause instabilities.
-    """
-    # print(marker_vel, np.size(marker_vel))
-
-    for m in nb.prange(N_markers):
-        np.int64(m)
-        marker_f[m, 0] = np.random.normal(0, 1)*(2*gamma*kb_T)**(1/2) # dt = 1
-        marker_f[m, 1] = np.random.normal(0, 1)*(2*gamma*kb_T)**(1/2) # dt = 1
-        marker_f[m, 2] = np.random.normal(0, 1)*(2*gamma*kb_T)**(1/2) # dt = 1
 
 #%% Initialisation Functions
 def initialise_fluid_arrays(Nx, Ny, Nz, rho_0, rho, u, u_mag_sq, F, pops_pre, pops_post):
@@ -238,7 +220,7 @@ print(f'Particle Diameter: {D_particle}\nSpacing Multiplier: {spacing_mutl}\nNx,
 print(f'Boundary Representation: immersed boundary method ({IB_kernel})')
 if IB_kernel == 'dual gaussian':
     print(f'Distribution Width: {f_dist_width}')
-print(f'Kinematic Viscosity: {nu:.4f}\nInitial Fluid Density: {rho_0}\nForcing Scale: {(np.pi*D_particle*kb_T)**(1/2)}')
+print(f'Kinematic Viscosity: {nu:.4f}')
 print(f'Relaxation Factor (BGK): {tau:.4f}\n')
 
 
@@ -279,7 +261,7 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
         
         
         # Calculate marker forces
-        brownian_forcing(N_markers, marker_f)
+        #brownian_forcing(N_markers, marker_f)
         
         # Calculate forcing due to IB markers
         int_err = IB_force_density(Nx, Ny, Nz, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, F, 
@@ -291,8 +273,8 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
         #                                 N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx)
         update_LBM_pops_closed(pops_pre, pops_post, F, rho, u, u_mag_sq, Nx, Ny, Nz, 
                                inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, 
-                               N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx)
-        
+                               N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, nu, kB_T)
+ 
         # Interpolate boundary marker velocities
         interpolate_marker_vels(u, N_markers, marker_vel, marker_nh, marker_nh_size)
         
@@ -328,6 +310,7 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
                 u_mag_sq_max = u_mag_sq_curr
             
             m = 0 # only plot the first marker
+            
             z_slice = min(max(int(round(marker_pos[m, 2])), 0), Nz-1)
             
             plt.figure(figsize=(5, 4))

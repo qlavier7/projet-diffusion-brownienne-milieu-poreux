@@ -217,6 +217,203 @@ def calc_Fi_comp_BGK(Fx, Fy, Fz, ux, uy, uz, cu, cx, cy, cz, w, inv_cs2, inv_cs4
 #%% BGK Forced Collision
 @nb.jit(nopython=True, parallel=True, fastmath=True)
 def collide_forced(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, 
+                   inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega_S_coeff, N_vels, w, c, nu, kB_T):
+    """
+    Calculates and saves the velocity and density fields from the current 
+    populations and performs the BGK collision globally with Guo forcing.
+
+    Parameters
+    ----------
+    pops_pre : ndarray
+        pre-collision populations. ndims=4, dtype=float
+    pops_post : ndarray
+        post-collision populations. ndims=4, dtype=float
+    F : ndarray
+        fluid force density field. ndims=4, dtype=float
+    rho : ndarray
+        fluid density field. ndims=3, dtype=float
+    u : ndarray
+        fluid velocity field. ndims=4, dtype=float
+    u_mag2 : ndarray
+        fluid velocity squared magnitude field. ndims=3, dtype=float
+    Nx : int
+        number of fluid cells in the x direction.
+    Ny : int
+        number of fluid cells in the y direction.
+    Nz : int
+        number of fluid cells in the z direction.
+    inv_cs2 : float
+        inverse squared sonic velocity.
+    inv_2cs2 : float
+        half inverse squared sonic velocity.
+    inv_cs4 : float
+        inverse sonic velocity fourth power.
+    inv_2cs4 : float
+        half inverse sonic velocity fourth power.
+    omega : float
+        inverse relaxation factor.
+    omega_prime : float
+        "conjugate" inverse relaxation factor (1 - omega).
+    omega_S_coeff : float
+        "conjugate" half inverse relaxation factor.
+    N_vels : int
+        number of discrete velocities (i.e. "lattice vectors").
+    w : ndarray
+        discrete velocity weightings. ndims=1, dtype=float
+    c : ndarray
+        discrete velocity set. ndtims=2, dtype=int
+
+    Returns
+    -------
+    None.
+    """
+    
+    """
+    Calculates and saves the velocity and density fields from the current 
+    populations and performs the BGK collision globally with Guo forcing
+    and thermal fluctuations.
+    """
+    
+    # -------------------------------------------------------------------------
+    # PRÉCALCULS GLOBAUX : Base des modes, paramètres de relaxation et bruit
+    # -------------------------------------------------------------------------
+    
+    # Vecteurs de base e_ki pour le modèle D3Q19 (Table II)
+    e_k = np.zeros((19, 19), dtype=np.float64)
+    
+    for q in range(19):
+        cx, cy, cz = c[q, 0], c[q, 1], c[q, 2]
+        c2 = cx*cx + cy*cy + cz*cz
+        
+        e_k[0, q] = 1.0
+        e_k[1, q] = cx
+        e_k[2, q] = cy
+        e_k[3, q] = cz
+        e_k[4, q] = c2 - 1.0
+        e_k[5, q] = 3.0*cx*cx - c2
+        e_k[6, q] = cy*cy - cz*cz
+        e_k[7, q] = cx*cy
+        e_k[8, q] = cy*cz
+        e_k[9, q] = cz*cx
+        e_k[10, q] = (3.0*c2 - 5.0)*cx
+        e_k[11, q] = (3.0*c2 - 5.0)*cy
+        e_k[12, q] = (3.0*c2 - 5.0)*cz
+        e_k[13, q] = (cy*cy - cz*cz)*cx
+        e_k[14, q] = (cz*cz - cx*cx)*cy
+        e_k[15, q] = (cx*cx - cy*cy)*cz
+        e_k[16, q] = 3.0*c2*c2 - 6.0*c2 + 1.0
+        e_k[17, q] = (2.0*c2 - 3.0)*(3.0*cx*cx - c2)
+        e_k[18, q] = (2.0*c2 - 3.0)*(cy*cy - cz*cz)
+
+    w_k = np.array([1.0, 1.0/3.0, 1.0/3.0, 1.0/3.0, 2.0/3.0, 4.0/3.0, 4.0/9.0, 1.0/9.0, 1.0/9.0, 1.0/9.0, 
+                    2.0/3.0, 2.0/3.0, 2.0/3.0, 2.0/9.0, 2.0/9.0, 2.0/9.0, 2.0, 4.0/3.0, 4.0/9.0], dtype=np.float64)
+
+    # Matrice de passage orthonormée e_hat
+    e_hat = np.zeros((19, 19), dtype=np.float64)
+    for mk in range(19):
+        for q in range(19):
+            e_hat[mk, q] = np.sqrt(w[q] / w_k[mk]) * e_k[mk, q]
+
+    # Paramètres de relaxation (gamma)
+    gamma = np.zeros(19, dtype=np.float64)
+    eta_hat = nu*inv_cs2
+    gamma[0:4] = 1.0                                # Modes conservés (masse et impulsion)
+    gamma[4] = (3.0 * eta_hat - 1.0) / (3.0 * eta_hat + 1.0)  # Mode de contrainte volumique (viscosité = nu)
+    gamma_s = (2.0 * eta_hat - 1.0) / (2.0 * eta_hat + 1.0)   # Modes de contrainte de cisaillement
+    gamma[5:10] = gamma_s
+    gamma[10:19] = 0.0                              # Modes cinétiques purement stochastiques
+
+    # Amplitude du bruit garantissant le respect du bilan détaillé
+    phi = np.sqrt(1.0 - gamma**2)
+    
+    # Contrôle de l'intensité des fluctuations
+    mu = kB_T * inv_cs2  # Eq. 90: \mu = (kB_T * h^2) / (c_s^2 * b^{d+2}), ici ramené en unités réseaux (h=1, b=1)
+
+    # -------------------------------------------------------------------------
+    # DYNAMIQUE SUR GRILLE SPATIALE
+    # -------------------------------------------------------------------------
+    
+    for i in nb.prange(Nx):
+        i = np.int64(i)
+        for j in range(Ny):
+            for k in range(Nz):
+                
+                # Calcul de rho et u
+                local_rho = 0.0
+                local_rhou_x = 0.5*F[i, j, k, 0]
+                local_rhou_y = 0.5*F[i, j, k, 1]
+                local_rhou_z = 0.5*F[i, j, k, 2]
+                
+                for q in range(N_vels):
+                    pop = pops_pre[i, j, k, q]
+                    local_rho += pop
+                    local_rhou_x += pop*c[q, 0]
+                    local_rhou_y += pop*c[q, 1]
+                    local_rhou_z += pop*c[q, 2]
+                
+                if local_rho < 1.0e-14: local_rho = 1.0e-14
+                local_rho_inv = 1.0/local_rho
+                local_ux = local_rhou_x*local_rho_inv
+                local_uy = local_rhou_y*local_rho_inv
+                local_uz = local_rhou_z*local_rho_inv
+                local_u2 = local_ux*local_ux + local_uy*local_uy + local_uz*local_uz
+                
+                # Sauvegarde des données macroscopiques
+                rho[i, j, k] = local_rho
+                u[i, j, k, 0] = local_ux
+                u[i, j, k, 1] = local_uy
+                u[i, j, k, 2] = local_uz
+                u_mag2[i, j, k] = local_u2
+                
+                # Tableaux temporaires pour les variables locales
+                local_f_eq = np.zeros(19, dtype=np.float64)
+                local_F_i = np.zeros(19, dtype=np.float64)
+                local_x = np.zeros(19, dtype=np.float64)
+                
+                # 1 & 2. Calcul des variables hors-équilibre normalisées (x_i)
+                for q in range(19):
+                    cx = c[q, 0]
+                    cy = c[q, 1]
+                    cz = c[q, 2]
+                    cu = cx*local_ux + cy*local_uy + cz*local_uz
+                    
+                    f_eq = calc_f_eq_comp_BGK(cu, local_u2, local_rho, w[q], inv_cs2, inv_2cs2, inv_2cs4)
+                    F_i = calc_Fi_comp_BGK(F[i, j, k, 0], F[i, j, k, 1], F[i, j, k, 2], local_ux, local_uy, local_uz, 
+                                           cu, cx, cy, cz, w[q], inv_cs2, inv_cs4)
+                    
+                    local_f_eq[q] = f_eq
+                    local_F_i[q] = F_i
+                    
+                    # Normalisation adimensionnée de la fraction hors-équilibre
+                    local_x[q] = (pops_pre[i, j, k, q] - f_eq) / np.sqrt(mu * local_rho * w[q])
+                
+                # 3 & 4. Projection sur l'espace des modes et Mise à jour stochastique
+                local_m_star = np.zeros(19, dtype=np.float64)
+                for mk in range(19):
+                    m_k = 0.0
+                    for q in range(19):
+                        m_k += e_hat[mk, q] * local_x[q]
+                    
+                    r_k = 0.0
+                    # Injection du bruit indépendant de distribution normale réduite N(0, 1) pour les modes non conservés
+                    if mk > 3:
+                        r_k = np.random.randn()
+                    
+                    # Relaxation de la partie déterministe et ajout de l'intensité stochastique
+                    local_m_star[mk] = gamma[mk] * m_k + phi[mk] * r_k
+                
+                # 5 & 6. Rétro-projection linéaire et réintégration des forçages
+                for q in range(19):
+                    x_star = 0.0
+                    for mk in range(19):
+                        x_star += e_hat[mk, q] * local_m_star[mk]
+                    
+                    # Reconstruction de l'équation de Boltzmann sur réseaux (post-collision) + forçage scalaire de Guo
+                    pops_post[i, j, k, q] = local_f_eq[q] + np.sqrt(mu * local_rho * w[q]) * x_star + local_F_i[q] * omega_S_coeff
+    
+
+@nb.jit(nopython=True, parallel=True, fastmath=True)
+def collide_forced2(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, 
                    inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c):
     """
     Calculates and saves the velocity and density fields from the current 
@@ -312,9 +509,9 @@ def collide_forced(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz,
                                            cu, cx, cy, cz, w[q], inv_cs2, inv_cs4)
                     
                     ## Perform forced BGK collisions
+                    
                     pops_post[i, j, k, q] = pops_pre[i, j, k, q]*omega_prime + f_eq*omega + F_i*omega_S_coeff # plus optional fluctuating stress term
-
-
+                    
 
 #%% Streaming
 @nb.jit(nopython=True, parallel=True, fastmath=True)
@@ -366,30 +563,6 @@ def stream_1D_flow(pops_pre, pops_post, rho, Nx, Ny, Nz, rho_0, Ux_t, Uy_0, Uz_0
     -------
     None.
     """
-    
-    # Bulk Streaming
-    # for i in nb.prange(Nx):
-    #     i = np.int64(i)
-    #     for j in range(Ny):
-    #         for k in range(Nz):
-    #             for q in range(N_vels):
-    #                 pull_i = i - c[q, 0]
-    #                 pull_j = j - c[q, 1]
-    #                 pull_k = k - c[q, 2]
-    #                 q_write = q
-    #                 ## Slip condition on y-walls (top/bottom)
-    #                 if pull_j < 0 or pull_j >= Ny:
-    #                     pull_j = j
-    #                     q_write = inv_cy_indx[q]
-    #                 ## Slip condition on z-walls (front/back)
-    #                 if pull_k < 0 or pull_k >= Nz:
-    #                     pull_k = k
-    #                     q_write = inv_cz_indx[q]
-    #                 ## Skip particles pulled from outside the x domain
-    #                 if pull_i < 0 or pull_i >= Nx:
-    #                     continue
-    #                 pops_pre[i, j, k, q] = pops_post[pull_i, pull_j, pull_k, q_write]
-    
     
     # Bulk Streaming - Internal Nodes
     for i in nb.prange(1, Nx-1):
@@ -651,506 +824,6 @@ def stream_closed(pops_pre, pops_post, Nx, Ny, Nz, N_vels, c, inv_cx_indx, inv_c
 
 
 
-#%% Combined Collision and Streaming
-# @nb.jit(nopython=True, inline='always', fastmath=True)
-# def collide_forced_local(i, j, k, local_pre, pops_dst, F, rho, u, u_mag2, 
-#                          inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c):
-#     """
-#     Calculates and saves the velocity and density fields from the current 
-#     populations and performs the BGK collision locally with Guo forcing.
-
-#     Parameters
-#     ----------
-#     i : int
-#         current lattice x index.
-#     j : int
-#         current lattice x index.
-#     k : int
-#         current lattice x index.
-#     local_pre : ndarray
-#         current lattice particle populations. ndims=1, dtype=float
-#     pops_dst : ndarray
-#         destination populations. ndims=4, dtype=float
-#     F : ndarray
-#         fluid force density field. ndims=4, dtype=float
-#     rho : ndarray
-#         fluid density field. ndims=3, dtype=float
-#     u : ndarray
-#         fluid velocity field. ndims=4, dtype=float
-#     u_mag2 : ndarray
-#         fluid velocity squared magnitude field. ndims=3, dtype=float
-#     inv_cs2 : float
-#         inverse squared sonic velocity.
-#     inv_2cs2 : float
-#         half inverse squared sonic velocity.
-#     inv_cs4 : float
-#         inverse sonic velocity fourth power.
-#     inv_2cs4 : float
-#         half inverse sonic velocity fourth power.
-#     omega : float
-#         inverse relaxation factor.
-#     omega_prime : float
-#         "conjugate" inverse relaxation factor (1 - omega).
-#     omega_S_coeff : float
-#         "conjugate" half inverse relaxation factor.
-#     N_vels : int
-#         number of discrete velocities (i.e. "lattice vectors").
-#     w : ndarray
-#         discrete velocity weightings. ndims=1, dtype=float
-#     c : ndarray
-#         discrete velocity set. ndtims=2, dtype=int
-
-#     Returns
-#     -------
-#     None.
-#     """
-    
-#     # Calculate rho and u
-#     local_rho = 0.0
-#     local_Fx = F[i, j, k, 0]
-#     local_Fy = F[i, j, k, 1]
-#     local_Fz = F[i, j, k, 2]
-#     local_rhou_x = 0.5*local_Fx
-#     local_rhou_y = 0.5*local_Fy
-#     local_rhou_z = 0.5*local_Fz
-    
-#     for q in range(N_vels):
-#         pop = local_pre[q]
-#         local_rho += pop
-#         local_rhou_x += pop*c[q, 0]
-#         local_rhou_y += pop*c[q, 1]
-#         local_rhou_z += pop*c[q, 2]
-    
-#     if local_rho < 1.0e-14: local_rho = 1.0e-14
-#     local_rho_inv = 1.0/local_rho
-#     local_ux = local_rhou_x*local_rho_inv
-#     local_uy = local_rhou_y*local_rho_inv
-#     local_uz = local_rhou_z*local_rho_inv
-#     local_u2 = local_ux*local_ux + local_uy*local_uy + local_uz*local_uz
-    
-#     # Save Data
-#     rho[i, j, k] = local_rho
-#     u[i, j, k, 0] = local_ux
-#     u[i, j, k, 1] = local_uy
-#     u[i, j, k, 2] = local_uz
-#     u_mag2[i, j, k] = local_u2
-    
-#     # BGK Collision Loop
-#     for q in range(N_vels):
-#         cx = c[q, 0]
-#         cy = c[q, 1]
-#         cz = c[q, 2]
-#         cu = cx*local_ux + cy*local_uy + cz*local_uz
-        
-#         f_eq = calc_f_eq_comp_BGK(cu, local_u2, local_rho, w[q], inv_cs2, inv_2cs2, inv_2cs4)
-#         F_i = calc_Fi_comp_BGK(local_Fx, local_Fy, local_Fz, local_ux, local_uy, local_uz, 
-#                                cu, cx, cy, cz, w[q], inv_cs2, inv_cs4)
-        
-#         ## Perform forced BGK collisions
-#         pops_dst[i, j, k, q] = local_pre[q]*omega_prime + f_eq*omega + F_i*omega_S_coeff # plus optional fluctuating stress term
-
-
-# @nb.jit(nopython=True, parallel=True, fastmath=True)
-# def stream_collide_1D_flow(pops_src, pops_dst, F, rho, u, u_mag2, Nx, Ny, Nz, rho_0, Ux_t, Uy_0, Uz_0, 
-#                            inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, 
-#                            N_vels, w, c, inv_cy_indx, inv_cz_indx, alpha=0.99):
-#     """
-#     Combined streaming and collision for greater efficiency. 
-#     Streams particle populations, assuming a flow inlet at the x = 0 and outlet 
-#     at x = Nx with inlet velocity u = [Ux_t, Uy_0, Uz_0], where Uy_0 = Uz_0 = 0.
-#     Slip condition on all other boundaries.
-#     Constant 1D velocity inlet with x velocity = Ux_t.
-#     Zero-gradient density (pressure) outlet, with the density pinned to the
-#     desired fluid density rho_0. alpha controls the strength at which the fluid
-#     density is enforced to remain at rho_0.
-
-#     Parameters
-#     ----------
-#     pops_src : ndarray
-#         source populations. ndims=4, dtype=float
-#     pops_dst : ndarray
-#         destination populations. ndims=4, dtype=float
-#     F : ndarray
-#         fluid force density field. ndims=4, dtype=float
-#     rho : ndarray
-#         fluid density field. ndims=3, dtype=float
-#     u : ndarray
-#         fluid velocity field. ndims=4, dtype=float
-#     u_mag2 : ndarray
-#         fluid velocity squared magnitude field. ndims=3, dtype=float
-#     Nx : int
-#         number of fluid cells in the x direction.
-#     Ny : int
-#         number of fluid cells in the y direction.
-#     Nz : int
-#         number of fluid cells in the z direction.
-#     rho_0 : float
-#         reference fluid density.
-#     Ux_t : float
-#         current fluid inlet x velocity.
-#     Uy_0 : float
-#        fluid inlet y velocity (0).
-#     Uz_0 : float
-#         fluid inlet z velocity (0).
-#     inv_cs2 : float
-#         inverse squared sonic velocity.
-#     inv_2cs2 : float
-#         half inverse squared sonic velocity.
-#     inv_cs4 : float
-#         inverse sonic velocity fourth power.
-#     inv_2cs4 : float
-#         half inverse sonic velocity fourth power.
-#     omega : float
-#         inverse relaxation factor.
-#     omega_prime : float
-#         "conjugate" inverse relaxation factor (1 - omega).
-#     omega_S_coeff : float
-#         "conjugate" half inverse relaxation factor.
-#     N_vels : int
-#         number of discrete velocities (i.e. "lattice vectors").
-#     w : ndarray
-#         discrete velocity weightings. ndims=1, dtype=float
-#     c : ndarray
-#         discrete velocity set. ndtims=2, dtype=int
-#     inv_cy_indx : ndarray
-#         indexing array for specular reflection in the y direction. ndims=1, dtype=float
-#     inv_cz_indx : ndarray
-#         indexing array for specular reflection in the z direction. ndims=1, dtype=float
-#     alpha : float, optional
-#         reference density anchoring weighting factor. The default is 0.99.
-
-#     Returns
-#     -------
-#     None.
-#     """
-    
-#     # Bulk Streaming - Internal Nodes
-#     for i in nb.prange(1, Nx-1):
-#         i = np.int64(i)
-#         local_pre = np.empty(N_vels, dtype=np.float64)
-#         for j in range(1, Ny-1):
-#             for k in range(1, Nz-1):
-#                 for q in range(N_vels):
-#                     pull_i = i - c[q, 0]
-#                     pull_j = j - c[q, 1]
-#                     pull_k = k - c[q, 2]
-#                     local_pre[q] = pops_src[pull_i, pull_j, pull_k, q]
-#                 collide_forced_local(i, j, k, local_pre, pops_dst, F, rho, u, u_mag2, 
-#                                      inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c)
-    
-#     # Y Bounds
-#     for j in [0, Ny-1]:
-#         j = np.int64(j)
-#         for i in nb.prange(1, Nx-1):
-#             i = np.int64(i)
-#             local_pre = np.empty(N_vels, dtype=np.float64)
-#             for k in range(Nz):
-#                 for q in range(N_vels):
-#                     pull_i = i - c[q, 0]
-#                     pull_j = j - c[q, 1]
-#                     pull_k = k - c[q, 2]
-#                     q_write = q
-#                     ## Slip condition on y-walls (top/bottom)
-#                     if pull_j < 0 or pull_j >= Ny:
-#                         pull_j = j
-#                         q_write = inv_cy_indx[q]
-#                     ## Slip condition on z-walls (front/back)
-#                     if pull_k < 0 or pull_k >= Nz:
-#                         pull_k = k
-#                         q_write = inv_cz_indx[q]
-#                     local_pre[q] = pops_src[pull_i, pull_j, pull_k, q_write]
-#                 collide_forced_local(i, j, k, local_pre, pops_dst, F, rho, u, u_mag2, 
-#                                      inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c)
-    
-#     # Z Bounds
-#     for k in [0, Nz-1]:
-#         k = np.int64(k)
-#         for i in nb.prange(1, Nx-1):
-#             i = np.int64(i)
-#             local_pre = np.empty(N_vels, dtype=np.float64)
-#             for j in range(1, Ny-1):
-#                 for q in range(N_vels):
-#                     pull_i = i - c[q, 0]
-#                     pull_j = j - c[q, 1]
-#                     pull_k = k - c[q, 2]
-#                     q_write = q
-#                     ## Slip condition on z-walls (front/back)
-#                     if pull_k < 0 or pull_k >= Nz:
-#                         pull_k = k
-#                         q_write = inv_cz_indx[q]
-#                     local_pre[q] = pops_src[pull_i, pull_j, pull_k, q_write]
-#                 collide_forced_local(i, j, k, local_pre, pops_dst, F, rho, u, u_mag2, 
-#                                      inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c)
-    
-    
-#     # Inlet - Zou-He Constant Velocity
-#     i = np.int64(0)
-#     for j in nb.prange(Ny):
-#         j = np.int64(j)
-#         local_pre = np.empty(N_vels, dtype=np.float64)
-#         for k in range(Nz):
-#             for q in range(N_vels):
-#                 pull_i = i - c[q, 0]
-#                 pull_j = j - c[q, 1]
-#                 pull_k = k - c[q, 2]
-#                 q_write = q
-#                 ## Slip condition on y-walls (top/bottom)
-#                 if pull_j < 0 or pull_j >= Ny:
-#                     pull_j = j
-#                     q_write = inv_cy_indx[q]
-#                 ## Slip condition on z-walls (front/back)
-#                 if pull_k < 0 or pull_k >= Nz:
-#                     pull_k = k
-#                     q_write = inv_cz_indx[q]
-#                 ## Update outgoing particles
-#                 if pull_i >= 0:
-#                     local_pre[q] = pops_src[pull_i, pull_j, pull_k, q_write]
-            
-#             pop0 = local_pre[0]
-#             pop2 = local_pre[2]
-#             pop3 = local_pre[3]
-#             pop4 = local_pre[4]
-#             pop5 = local_pre[5]
-#             pop6 = local_pre[6]
-#             pop8 = local_pre[8]
-#             pop10 = local_pre[10]
-#             pop11 = local_pre[11]
-#             pop12 = local_pre[12]
-#             pop14 = local_pre[14]
-#             pop16 = local_pre[16]
-#             pop17 = local_pre[17]
-#             pop18 = local_pre[18]
-            
-#             local_rho = pop10 + pop16 + pop8 + pop14 + pop2
-#             local_rho = pop12 + pop17 + pop18 + pop11 + pop6 + pop5 + pop4 + pop3 + pop0 + local_rho*2.0
-#             local_rho_ux= Ux_t*local_rho/(1.0 - Ux_t)
-#             local_rho_ux_div6 = local_rho_ux/6.0
-            
-#             Nxy = (-pop12 - pop18 - pop4 + pop17 + pop11 + pop3)/2.0
-#             Nxz = (-pop12 - pop17 - pop6 + pop18 + pop11 + pop5)/2.0
-            
-#             local_pre[1] = pop2 + local_rho_ux/3.0
-#             local_pre[13] = pop14 + local_rho_ux_div6 + Nxy
-#             local_pre[7] = pop8 + local_rho_ux_div6 - Nxy
-#             local_pre[9] = pop10 + local_rho_ux_div6 - Nxz
-#             local_pre[15] = pop16 + local_rho_ux_div6 + Nxz
-            
-#             collide_forced_local(i, j, k, local_pre, pops_dst, F, rho, u, u_mag2, 
-#                                  inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c)
-    
-    
-#     # Outlet - Zou-He Constant Pressure (Density)
-#     alpha_prime = 1 - alpha
-#     i = np.int64(Nx-1)
-#     for j in nb.prange(Ny):
-#         j = np.int64(j)
-#         local_pre = np.empty(N_vels, dtype=np.float64)
-#         for k in range(Nz):
-#             for q in range(N_vels):
-#                 pull_i = i - c[q, 0]
-#                 pull_j = j - c[q, 1]
-#                 pull_k = k - c[q, 2]
-#                 q_write = q
-#                 ## Slip condition on y-walls (top/bottom)
-#                 if pull_j < 0 or pull_j >= Ny:
-#                     pull_j = j
-#                     q_write = inv_cy_indx[q]
-#                 ## Slip condition on z-walls (front/back)
-#                 if pull_k < 0 or pull_k >= Nz:
-#                     pull_k = k
-#                     q_write = inv_cz_indx[q]
-#                 ## Update outgoing particles
-#                 if pull_i < Nx:
-#                     local_pre[q] = pops_src[pull_i, pull_j, pull_k, q_write]
-            
-#             pop0 = local_pre[0]
-#             pop1 = local_pre[1]
-#             pop3 = local_pre[3]
-#             pop4 = local_pre[4]
-#             pop5 = local_pre[5]
-#             pop6 = local_pre[6]
-#             pop7 = local_pre[7]
-#             pop9 = local_pre[9]
-#             pop11 = local_pre[11]
-#             pop12 = local_pre[12]
-#             pop13 = local_pre[13]
-#             pop15 = local_pre[15]
-#             pop17 = local_pre[17]
-#             pop18 = local_pre[18]
-            
-#             local_ux = pop15 + pop9 + pop13 + pop7 + pop1
-#             local_ux = pop12 + pop17 + pop18 + pop11 + pop6 + pop5 + pop4 + pop3 + pop0 + local_ux*2.0
-            
-#             local_rho = alpha*rho[-2, j, k] + alpha_prime*rho_0
-            
-#             local_ux_rho =  local_ux - local_rho
-#             local_ux_rho_div6 = local_ux_rho/6.0
-            
-#             Nxy = (-pop12 - pop18 - pop4 + pop17 + pop11 + pop3)/2.0
-#             Nxz = (-pop12 - pop17 - pop6 + pop18 + pop11 + pop5)/2.0
-            
-#             local_pre[2] = pop1 - local_ux_rho/3.0
-#             local_pre[14] = pop13 - local_ux_rho_div6 - Nxy
-#             local_pre[8] = pop7 - local_ux_rho_div6 + Nxy
-#             local_pre[10] = pop9 - local_ux_rho_div6 + Nxz
-#             local_pre[16] = pop15 - local_ux_rho_div6 - Nxz
-            
-#             collide_forced_local(i, j, k, local_pre, pops_dst, F, rho, u, u_mag2, 
-#                                  inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c)
-
-
-# @nb.jit(nopython=True, parallel=True, fastmath=True)
-# def stream_collide_closed(pops_src, pops_dst, F, rho, u, u_mag2, Nx, Ny, Nz, 
-#                           inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, 
-#                           N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx):
-#     """
-#     Combined streaming and collision for greater efficiency. 
-#     Streams particle populations, assuming all domain boundaries are slip walls.
-#     There are no external conditions which anchor fluid properties
-#     (specifically density); the fluid density may drift over long simulations.
-#     It may be necessary to anchor the fluid density globally via
-#     rho = alpha*rho + (1-alpha)*rho_0.
-
-#     Parameters
-#     ----------
-#     pops_src : ndarray
-#         source populations. ndims=4, dtype=float
-#     pops_dst : ndarray
-#         destination populations. ndims=4, dtype=float
-#     F : ndarray
-#         fluid force density field. ndims=4, dtype=float
-#     rho : ndarray
-#         fluid density field. ndims=3, dtype=float
-#     u : ndarray
-#         fluid velocity field. ndims=4, dtype=float
-#     u_mag2 : ndarray
-#         fluid velocity squared magnitude field. ndims=3, dtype=float
-#     Nx : int
-#         number of fluid cells in the x direction.
-#     Ny : int
-#         number of fluid cells in the y direction.
-#     Nz : int
-#         number of fluid cells in the z direction.
-#     inv_cs2 : float
-#         inverse squared sonic velocity.
-#     inv_2cs2 : float
-#         half inverse squared sonic velocity.
-#     inv_cs4 : float
-#         inverse sonic velocity fourth power.
-#     inv_2cs4 : float
-#         half inverse sonic velocity fourth power.
-#     omega : float
-#         inverse relaxation factor.
-#     omega_prime : float
-#         "conjugate" inverse relaxation factor (1 - omega).
-#     omega_S_coeff : float
-#         "conjugate" half inverse relaxation factor.
-#     N_vels : int
-#         number of discrete velocities (i.e. "lattice vectors").
-#     w : ndarray
-#         discrete velocity weightings. ndims=1, dtype=float
-#     c : ndarray
-#         discrete velocity set. ndtims=2, dtype=int
-#     inv_cx_indx : ndarray
-#         indexing array for specular reflection in the x direction. ndims=1, dtype=float
-#     inv_cy_indx : ndarray
-#         indexing array for specular reflection in the y direction. ndims=1, dtype=float
-#     inv_cz_indx : ndarray
-#         indexing array for specular reflection in the z direction. ndims=1, dtype=float
-
-#     Returns
-#     -------
-#     None.
-#     """
-    
-#     # Bulk Streaming - Internal Nodes
-#     for i in nb.prange(1, Nx-1):
-#         i = np.int64(i)
-#         local_pre = np.empty(N_vels, dtype=np.float64)
-#         for j in range(1, Ny-1):
-#             for k in range(1, Nz-1):
-#                 for q in range(N_vels):
-#                     pull_i = i - c[q, 0]
-#                     pull_j = j - c[q, 1]
-#                     pull_k = k - c[q, 2]
-#                     local_pre[q] = pops_src[pull_i, pull_j, pull_k, q]
-#                 collide_forced_local(i, j, k, local_pre, pops_dst, F, rho, u, u_mag2, 
-#                                      inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c)
-    
-#     # X Bounds
-#     for i in [0, Nx-1]:
-#         i = np.int64(i)
-#         for j in nb.prange(Ny):
-#             j = np.int64(j)
-#             local_pre = np.empty(N_vels, dtype=np.float64)
-#             for k in range(Nz):
-#                 for q in range(N_vels):
-#                     pull_i = i - c[q, 0]
-#                     pull_j = j - c[q, 1]
-#                     pull_k = k - c[q, 2]
-#                     q_write = q
-#                     ## Slip condition on x-walls (left/right)
-#                     if pull_i < 0 or pull_i >= Nx:
-#                         pull_i = i
-#                         q_write = inv_cx_indx[q]
-#                     ## Slip condition on y-walls (top/bottom)
-#                     if pull_j < 0 or pull_j >= Ny:
-#                         pull_j = j
-#                         q_write = inv_cy_indx[q]
-#                     ## Slip condition on z-walls (front/back)
-#                     if pull_k < 0 or pull_k >= Nz:
-#                         pull_k = k
-#                         q_write = inv_cz_indx[q]
-#                     local_pre[q] = pops_src[pull_i, pull_j, pull_k, q_write]
-#                 collide_forced_local(i, j, k, local_pre, pops_dst, F, rho, u, u_mag2, 
-#                                      inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c)
-    
-#     # Y Bounds
-#     for j in [0, Ny-1]:
-#         j = np.int64(j)
-#         for i in nb.prange(1, Nx-1):
-#             i = np.int64(i)
-#             local_pre = np.empty(N_vels, dtype=np.float64)
-#             for k in range(Nz):
-#                 for q in range(N_vels):
-#                     pull_i = i - c[q, 0]
-#                     pull_j = j - c[q, 1]
-#                     pull_k = k - c[q, 2]
-#                     q_write = q
-#                     ## Slip condition on y-walls (top/bottom)
-#                     if pull_j < 0 or pull_j >= Ny:
-#                         pull_j = j
-#                         q_write = inv_cy_indx[q]
-#                     ## Slip condition on z-walls (front/back)
-#                     if pull_k < 0 or pull_k >= Nz:
-#                         pull_k = k
-#                         q_write = inv_cz_indx[q]
-#                     local_pre[q] = pops_src[pull_i, pull_j, pull_k, q_write]
-#                 collide_forced_local(i, j, k, local_pre, pops_dst, F, rho, u, u_mag2, 
-#                                      inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c)
-    
-#     # Z Bounds
-#     for k in [0, Nz-1]:
-#         k = np.int64(k)
-#         for i in nb.prange(1, Nx-1):
-#             i = np.int64(i)
-#             local_pre = np.empty(N_vels, dtype=np.float64)
-#             for j in range(1, Ny-1):
-#                 for q in range(N_vels):
-#                     pull_i = i - c[q, 0]
-#                     pull_j = j - c[q, 1]
-#                     pull_k = k - c[q, 2]
-#                     q_write = q
-#                     ## Slip condition on z-walls (front/back)
-#                     if pull_k < 0 or pull_k >= Nz:
-#                         pull_k = k
-#                         q_write = inv_cz_indx[q]
-#                     local_pre[q] = pops_src[pull_i, pull_j, pull_k, q_write]
-#                 collide_forced_local(i, j, k, local_pre, pops_dst, F, rho, u, u_mag2, 
-#                                      inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c)
-
-
-
 #%% Population Initialisation
 @nb.jit(nopython=True, parallel=True, fastmath=True)
 def initialise_pops(pops, F, u, u_mag2, Nx, Ny, Nz, rho_0, inv_cs2, inv_2cs2, inv_2cs4, N_vels, w, c):
@@ -1292,89 +965,9 @@ def update_LBM_pops_1D_flow(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, 
                    N_vels, c, inv_cy_indx, inv_cz_indx)
 
 
-# def update_LBM_pops_1D_flow_combined(t, pops_src, pops_dst, F, rho, u, u_mag2, Nx, Ny, Nz, rho_0, Ux_t, Uy_0, Uz_0, 
-#                                      inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, 
-#                                      N_vels, w, c, inv_cy_indx, inv_cz_indx):
-#     """
-#     Updates the paricle populations for one time step using the quasi-
-#     compressible LB equaiton with BGK collisions and Guo forcing. Collides and 
-#     streams particle populations simultaneously. Source and destination
-#     population arrays are swapped each time step to avoid large memory rewrites.
-#     1D inlet flow.
-
-#     Parameters
-#     ----------
-#     t : int
-#         current simulation time.
-#     pops_src : ndarray
-#         source populations. ndims=4, dtype=float
-#     pops_dst : ndarray
-#         destination populations. ndims=4, dtype=float
-#     F : ndarray
-#         fluid force density field. ndims=4, dtype=float
-#     rho : ndarray
-#         fluid density field. ndims=3, dtype=float
-#     u : ndarray
-#         fluid velocity field. ndims=4, dtype=float
-#     u_mag2 : ndarray
-#         fluid velocity squared magnitude field. ndims=3, dtype=float
-#     Nx : int
-#         number of fluid cells in the x direction.
-#     Ny : int
-#         number of fluid cells in the y direction.
-#     Nz : int
-#         number of fluid cells in the z direction.
-#     rho_0 : float
-#         reference fluid density.
-#     Ux_t : float
-#         current fluid inlet x velocity.
-#     Uy_0 : float
-#        fluid inlet y velocity (0).
-#     Uz_0 : float
-#         fluid inlet z velocity (0).
-#     inv_cs2 : float
-#         inverse squared sonic velocity.
-#     inv_2cs2 : float
-#         half inverse squared sonic velocity.
-#     inv_cs4 : float
-#         inverse sonic velocity fourth power.
-#     inv_2cs4 : float
-#         half inverse sonic velocity fourth power.
-#     omega : float
-#         inverse relaxation factor.
-#     omega_prime : float
-#         "conjugate" inverse relaxation factor (1 - omega).
-#     omega_S_coeff : float
-#         "conjugate" half inverse relaxation factor.
-#     N_vels : int
-#         number of discrete velocities (i.e. "lattice vectors").
-#     w : ndarray
-#         discrete velocity weightings. ndims=1, dtype=float
-#     c : ndarray
-#         discrete velocity set. ndtims=2, dtype=int
-#     inv_cy_indx : ndarray
-#         indexing array for specular reflection in the y direction. ndims=1, dtype=float
-#     inv_cz_indx : ndarray
-#         indexing array for specular reflection in the z direction. ndims=1, dtype=float
-
-#     Returns
-#     -------
-#     None.
-#     """
-    
-#     if t%2 == 0:
-#         stream_collide_1D_flow(pops_src, pops_dst, F, rho, u, u_mag2, Nx, Ny, Nz, rho_0, Ux_t, Uy_0, Uz_0, 
-#                                inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, 
-#                                N_vels, w, c, inv_cy_indx, inv_cz_indx)
-#     else:
-#         stream_collide_1D_flow(pops_dst, pops_src, F, rho, u, u_mag2, Nx, Ny, Nz, rho_0, Ux_t, Uy_0, Uz_0, 
-#                                inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, 
-#                                N_vels, w, c, inv_cy_indx, inv_cz_indx)
-
-
 def update_LBM_pops_closed(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, 
                            inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, 
-                           N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx):
+                           N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, nu, kB_T):
     """
     Updates the paricle populations for one time step using the quasi-
     compressible LB equaiton with BGK collisions and Guo forcing. First collides
@@ -1433,93 +1026,8 @@ def update_LBM_pops_closed(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz,
     """
     
     # Calculate fluid properties and perform collisions
-    collide_forced(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, 
-                   inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c)
-    
+    collide_forced(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega_S_coeff, N_vels, w, c, nu, kB_T)
+    #collide_forced2(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c)
     # Stream populations
     stream_closed(pops_pre, pops_post, Nx, Ny, Nz, 
                   N_vels, c, inv_cx_indx, inv_cy_indx, inv_cz_indx)
-
-
-# def update_LBM_pops_closed_combined(t, pops_src, pops_dst, F, rho, u, u_mag2, Nx, Ny, Nz, 
-#                                     inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, 
-#                                     N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx):
-#     """
-#     Updates the paricle populations for one time step using the quasi-
-#     compressible LB equaiton with BGK collisions and Guo forcing. Collides and 
-#     streams particle populations simultaneously. Source and destination
-#     population arrays are swapped each time step to avoid large memory rewrites.
-#     Slip walls for all boundaries.
-
-#     Parameters
-#     ----------
-#     t : int
-#         current simulation time.
-#     pops_src : ndarray
-#         source populations. ndims=4, dtype=float
-#     pops_dst : ndarray
-#         destination populations. ndims=4, dtype=float
-#     F : ndarray
-#         fluid force density field. ndims=4, dtype=float
-#     rho : ndarray
-#         fluid density field. ndims=3, dtype=float
-#     u : ndarray
-#         fluid velocity field. ndims=4, dtype=float
-#     u_mag2 : ndarray
-#         fluid velocity squared magnitude field. ndims=3, dtype=float
-#     Nx : int
-#         number of fluid cells in the x direction.
-#     Ny : int
-#         number of fluid cells in the y direction.
-#     Nz : int
-#         number of fluid cells in the z direction.
-#     inv_cs2 : float
-#         inverse squared sonic velocity.
-#     inv_2cs2 : float
-#         half inverse squared sonic velocity.
-#     inv_cs4 : float
-#         inverse sonic velocity fourth power.
-#     inv_2cs4 : float
-#         half inverse sonic velocity fourth power.
-#     omega : float
-#         inverse relaxation factor.
-#     omega_prime : float
-#         "conjugate" inverse relaxation factor (1 - omega).
-#     omega_S_coeff : float
-#         "conjugate" half inverse relaxation factor.
-#     N_vels : int
-#         number of discrete velocities (i.e. "lattice vectors").
-#     w : ndarray
-#         discrete velocity weightings. ndims=1, dtype=float
-#     c : ndarray
-#         discrete velocity set. ndtims=2, dtype=int
-#     inv_cx_indx : ndarray
-#         indexing array for specular reflection in the x direction. ndims=1, dtype=float
-#     inv_cy_indx : ndarray
-#         indexing array for specular reflection in the y direction. ndims=1, dtype=float
-#     inv_cz_indx : ndarray
-#         indexing array for specular reflection in the z direction. ndims=1, dtype=float
-
-#     Returns
-#     -------
-#     None.
-#     """
-    
-#     if t%2 == 0:
-#         stream_collide_closed(pops_src, pops_dst, F, rho, u, u_mag2, Nx, Ny, Nz, 
-#                               inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, 
-#                               N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx)
-#     else:
-#         stream_collide_closed(pops_dst, pops_src, F, rho, u, u_mag2, Nx, Ny, Nz, 
-#                               inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, 
-#                               N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx)
-
-
-
-
-
-
-
-
-
-
