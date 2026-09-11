@@ -65,14 +65,14 @@ max_mem_avail = 12.0e9 # maximum available memory [bytes]
 # Graphing and Outputs
 show_gaus_dist = False # plot the y distribution of the force distribution function
 live_flow_plot = True # plot the flow field during the simulation
-N_outputs = 40 # n.o. times to plot the solution field (only if live_flow_plot=True)
+N_outputs = 5 # n.o. times to plot the solution field (only if live_flow_plot=True)
 show_mass = False # plot the total fluid mass over the simulation duration - can be useful for identifying instabilities (should remain constant)
 
 
 # Geometry
-D_particle = 7 # number of lattice points across the particle diameter
+D_particle = 7 #7 # number of lattice points across the particle diameter
 r_particle = D_particle/2 # particle radius
-spacing_mutl = 10 # control the spacing between the particle and the domain walls
+spacing_mutl = 4 #10 # control the spacing between the particle and the domain walls
 
 Nx = int(spacing_mutl*D_particle+1) # simulation domain length
 Ny = Nx # simulation domain height
@@ -89,7 +89,7 @@ stopping_lims = [[stop_dist, Nx-1-stop_dist], [stop_dist, Ny-1-stop_dist], [stop
 
 
 # IBM
-IB_kernel = ['standard gaussian', 'dual gaussian'][1] # force distribution function to use
+IB_kernel = ['standard gaussian', 'dual gaussian'][0] # force distribution function to use
 f_dist_width = 2 # width of the surface gaussian force distribution function [lattice points] (only for dual gaussian IB kernel)
 
 
@@ -99,9 +99,10 @@ rho_0 = 1.0 # initial density [kg m-3]
 mu = rho_0*nu # dynamic viscosity [kg m-1 s-1]
 
 
-# Diffusion - would probably be defined by a temperature
-kB_T = 0.01
-
+# Diffusion
+kB_T = 1.0
+gamma = 6*np.pi*mu*r_particle # drag coefficient
+collide_forced = ['initial', 'fluctuation'][0] # which collision method to use for the fluctuating hydrodynamics approach
 
 #%% Solver Parameters
 sim_time = 1000 # simulation time [s] - adjust accordingly
@@ -109,7 +110,6 @@ Nt = int(sim_time) # number of time steps (since dt=1)
 
 
 outevery = int(Nt/N_outputs) # generate an output every this many steps
-# outevery = 2
 
 LBM_consts = get_LBM_consts(nu)
 inv_cs2 = LBM_consts['inv_cs2']
@@ -138,6 +138,22 @@ else:
 
 
 #%% Brownian Motion
+
+@nb.jit(nopython=True, parallel=True, fastmath=True)
+def brownian_forcing(N_markers, marker_f):
+    """
+    Brownian forcing function.
+    
+    Large marker forces can cause instabilities.
+    """
+    # print(marker_vel, np.size(marker_vel))
+
+    for m in nb.prange(N_markers):
+        np.int64(m)
+        marker_f[m, 0] = np.random.normal(0, 1)*(2*gamma*kB_T)**(1/2) # dt = 1
+        marker_f[m, 1] = np.random.normal(0, 1)*(2*gamma*kB_T)**(1/2) # dt = 1
+        marker_f[m, 2] = np.random.normal(0, 1)*(2*gamma*kB_T)**(1/2) # dt = 1
+
 
 #%% Initialisation Functions
 def initialise_fluid_arrays(Nx, Ny, Nz, rho_0, rho, u, u_mag_sq, F, pops_pre, pops_post):
@@ -261,7 +277,8 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
         
         
         # Calculate marker forces
-        #brownian_forcing(N_markers, marker_f)
+        if collide_forced == "initial":
+            brownian_forcing(N_markers, marker_f)
         
         # Calculate forcing due to IB markers
         int_err = IB_force_density(Nx, Ny, Nz, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, F, 
@@ -273,7 +290,7 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
         #                                 N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx)
         update_LBM_pops_closed(pops_pre, pops_post, F, rho, u, u_mag_sq, Nx, Ny, Nz, 
                                inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, 
-                               N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, nu, kB_T)
+                               N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, nu, kB_T, collide_forced)
  
         # Interpolate boundary marker velocities
         interpolate_marker_vels(u, N_markers, marker_vel, marker_nh, marker_nh_size)
