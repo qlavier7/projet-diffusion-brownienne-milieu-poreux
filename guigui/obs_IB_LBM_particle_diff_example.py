@@ -94,7 +94,7 @@ BCs = np.array(BCs, dtype=np.uint8)
 # Geometry
 D_particle = 7 # number of lattice points across the particle diameter
 r_particle = D_particle/2 # particle radius
-spacing_mutl = 3 # control the spacing between the particle and the domain walls
+spacing_mutl = 10 # control the spacing between the particle and the domain walls
 
 Nx = int(spacing_mutl*D_particle+1) # simulation domain length
 Ny = Nx # simulation domain height

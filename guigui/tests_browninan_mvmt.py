@@ -8,11 +8,11 @@ import matplotlib.pyplot as plt
 #%% Initial conditions
 show_gaus_dist = False # plot the y distribution of the force distribution function
 live_flow_plot = False # plot the flow field during the simulation
-N_outputs = 1000 # n.o. times to plot the solution field (only if live_flow_plot=True)
+N_outputs = 100 # n.o. times to plot the solution field (only if live_flow_plot=True)
 show_mass = False # plot the total fluid mass over the simulation duration - can be useful for identifying instabilities (should remain constant)
 D_particle = 7 # number of lattice points across the particle diameter
 r_particle = D_particle/2 # particle radius
-spacing_mutl = 3 # control the spacing between the particle and the domain walls
+spacing_mutl = 10 # control the spacing between the particle and the domain walls
 Nx = int(spacing_mutl*D_particle+1) # simulation domain length
 Ny = Nx # simulation domain height
 Nz = Nx # simulation domain depth
@@ -23,7 +23,7 @@ cz_particle = (Nz-1)/2 # particle initial z position
 N_markers = 1 # number of particle markers - need to offset initial positions for anything to happen when increasing this from 1
 stop_dist = D_particle # minimum distance from the particle to the wall before the simulation is stopped
 stopping_lims = [[stop_dist, Nx-1-stop_dist], [stop_dist, Ny-1-stop_dist], [stop_dist, Nz-1-stop_dist]]
-IB_kernel = ['standard gaussian', 'dual gaussian'][1] # force distribution function to use
+IB_kernel = ['standard gaussian', 'dual gaussian'][0] # force distribution function to use
 f_dist_width = 2 # width of the surface gaussian force distribution function [lattice points] (only for dual gaussian IB kernel)
 nu = 1/6 # kinematic viscosity [m2 s-1]
 rho_0 = 1.0 # initial density [kg m-3]
@@ -95,8 +95,8 @@ collide_forced = ['initial', 'fluctuation'][0]
 ## BCs = [[x_low, x_high], [y_low, y_high], [z_low, z_high]]
 ## 0 = periodic boundary, 1 = slip boundary, 2 = no-slip boundary
 ## When using periodic boundaries, both i_low and i_high must == 0
-BCs = [[0, 0], [0, 0], [0, 0]] # ex: all periodic
-# BCs = [[1, 1], [1, 1], [1, 1]] # ex: all slip
+#BCs = [[0, 0], [0, 0], [0, 0]] # ex: all periodic
+BCs = [[1, 1], [1, 1], [1, 1]] # ex: all slip
 # BCs = [[2, 2], [2, 2], [2, 2]] # ex: all no-slip
 # BCs = [[0, 0], [2, 2], [2, 2]] # ex: x periodic, y/z no-slip
 BCs = np.array(BCs, dtype=np.uint8)
@@ -139,7 +139,7 @@ def get_fresh_params(state):
 
 
 Matrix = []
-N_simulations = 100
+N_simulations = 20
 
 for i in range(N_simulations):
     print(f"Étape {i}")
@@ -205,12 +205,14 @@ def process_and_plot_msd(matrix, dt=1.0, txt_filename="msd_matrix.txt"):
     plt.plot(time, msd_individual.T, color="lightgray", alpha=0.8)
     
     # Courbe moyenne en rouge au-dessus
-    plt.plot(time, msd_mean, color="red", linewidth=2.5, label="MSD moyen")
+    plt.plot(time, msd_mean, color="red", linewidth=2.5, label="MSD")
     
     # Entrée factice pour la légende du gris clair
     plt.plot([], [], color="lightgray", label=f"Simulations ({M})")
     
-    plt.xlabel("Temps de simulation")
+    plt.xlabel("Simulation time")
+    plt.xlim(0)
+    plt.ylim(0)
     plt.ylabel("MSD")
     plt.title("Évolution du MSD en fonction du temps")
     plt.legend()
