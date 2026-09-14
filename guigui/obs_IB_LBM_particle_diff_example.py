@@ -7,6 +7,10 @@ For the fluctuating hydrodynamics approach, no force is applied to the particle;
 instead, it is simply carried along with the fluid. The fluctuating stress term 
 will need to be added to the LBGK collision equation.
 
+The boundaries of the simulation domain can be set to be periodic, slip, or no-
+slip. An arbitrary no-slip obstacle can also be defined and included in the 
+simulation.
+
 Based on previous convergence analyses, the minimum accurate particle diameter
 is 7 lattice units. Increasing it may help with stability (at the cost of
 computation). Two force distribution functions are available; a standard
@@ -18,6 +22,9 @@ spherical particle in Stokes flow - this may or may not be the case for the
 Langevin or fluctuating hydrodynamics approaches. The y distribution of this
 force distribution function (for only one particle) can be visualised if needed 
 (it is radially symmetric in 3D - i.e. spherical).
+If you want to run quicker simulations just for testing, use the standard
+gaussian kernel with a smaller particle diameter (perhaps 4), but the results
+will likely be inaccurate.
 
 Substantial hydrodynamic hinderance is caused by the proximity of the slip walls
 to the moving particle. Thus, it is expected that simulation results won't match 
@@ -53,7 +60,7 @@ import numpy as np
 import numba as nb
 import matplotlib.pyplot as plt
 
-from forced_LBGK_lib import get_LBM_consts, initialise_pops, update_LBM_pops_closed#, update_LBM_pops_closed_combined
+from obs_forced_LBGK_lib import get_LBM_consts, initialise_pops, update_LBM_pops_closed
 from multi_marker_IBM_lib import gaus_consts, gaus_dist, dual_gaus_consts, dual_gaus_dist, plot_gaus_dist, IB_force_density, interpolate_marker_vels
 
 max_mem_avail = 12.0e9 # maximum available memory [bytes]
@@ -64,32 +71,46 @@ max_mem_avail = 12.0e9 # maximum available memory [bytes]
 
 # Graphing and Outputs
 show_gaus_dist = False # plot the y distribution of the force distribution function
-live_flow_plot = True # plot the flow field during the simulation
-N_outputs = 40 # n.o. times to plot the solution field (only if live_flow_plot=True)
+live_flow_plot = False # plot the flow field during the simulation
+N_outputs = 10 # n.o. times to plot the solution field (only if live_flow_plot=True)
 show_mass = False # plot the total fluid mass over the simulation duration - can be useful for identifying instabilities (should remain constant)
+
+
+# Simulation Duration
+sim_time = 1000 # simulation time [s] - adjust accordingly
+
+
+# Fluid Domain Boundary Conditions
+## BCs = [[x_low, x_high], [y_low, y_high], [z_low, z_high]]
+## 0 = periodic boundary, 1 = slip boundary, 2 = no-slip boundary
+## When using periodic boundaries, both i_low and i_high must == 0
+BCs = [[0, 0], [0, 0], [0, 0]] # ex: all periodic
+# BCs = [[1, 1], [1, 1], [1, 1]] # ex: all slip
+# BCs = [[2, 2], [2, 2], [2, 2]] # ex: all no-slip
+# BCs = [[0, 0], [2, 2], [2, 2]] # ex: x periodic, y/z no-slip
+BCs = np.array(BCs, dtype=np.uint8)
 
 
 # Geometry
 D_particle = 7 # number of lattice points across the particle diameter
 r_particle = D_particle/2 # particle radius
-spacing_mutl = 10 # control the spacing between the particle and the domain walls
+spacing_mutl = 3 # control the spacing between the particle and the domain walls
 
 Nx = int(spacing_mutl*D_particle+1) # simulation domain length
 Ny = Nx # simulation domain height
 Nz = Nx # simulation domain depth
-n_lattice = Nx*Ny*Nz # total n.o. fluid nodes
+n_lattice = Nx*Ny*Nz
 
 cx_particle = (Nx-1)/2 # particle initial x position
 cy_particle = (Ny-1)/2 # particle initial y position
 cz_particle = (Nz-1)/2 # particle initial z position
 N_markers = 1 # number of particle markers - need to offset initial positions for anything to happen when increasing this from 1
 
-stop_dist = D_particle # minimum distance from the particle to the wall before the simulation is stopped
-stopping_lims = [[stop_dist, Nx-1-stop_dist], [stop_dist, Ny-1-stop_dist], [stop_dist, Nz-1-stop_dist]]
-
+stop_dist = r_particle # minimum distance from the particle to the wall before the simulation is stopped
+#stopping_lims = [[stop_dist, Nx-1-stop_dist], [stop_dist, Ny-1-stop_dist], [stop_dist, Nz-1-stop_dist]]
 
 # IBM
-IB_kernel = ['standard gaussian', 'dual gaussian'][1] # force distribution function to use
+IB_kernel = ['standard gaussian', 'dual gaussian'][0] # force distribution function to use
 f_dist_width = 2 # width of the surface gaussian force distribution function [lattice points] (only for dual gaussian IB kernel)
 
 
@@ -99,17 +120,78 @@ rho_0 = 1.0 # initial density [kg m-3]
 mu = rho_0*nu # dynamic viscosity [kg m-1 s-1]
 
 
-# Diffusion - would probably be defined by a temperature
-kB_T = 0.01
+# Diffusion
+kB_T = 0.005
+gamma = 6*np.pi*mu*r_particle # drag coefficient
+collide_forced = ['initial', 'fluctuation'][1] # which collision method to use for the fluctuating hydrodynamics approach
+
+
+
+#%% Define Obstacle Geometry
+@nb.jit(nopython=True, parallel=True, fastmath=True)
+def initialise_obstacle(obstacle, Nx, Ny, Nz):
+    """
+    If you'd like a solid obstacle within the domain, change this function to 
+    define it. There can be multiple obstacles. Remember that only the fluid 
+    sees the obstacle; the obstacle-particle interactions will have to be 
+    handled by something else.
+    
+    Fluid cells where obstacle == True act as solid objects; the fluid is not
+    updated at these points and they act as no-slip boundaries.
+    
+    Note that this is a simplistic True/False obstacle representation (curved 
+    obstacles will thus be approximated by a stepped surface) - increase the 
+    mesh resolution for a more accurate representation.
+    
+    Haven't tested with placing the obstacle on the domain boundaries.
+    """
+    
+    # Random rectangular obstacle
+    # for i in nb.prange(Nx):
+    #     i = np.int64(i)
+    #     if 0.1*(Nx-1) <= i <= 0.4*(Nx-1):
+    #         for j in range(Ny):
+    #             if 0.3*(Ny-1) <= j <= 0.7*(Ny-1):
+    #                 for k in range(Nz):
+    #                     if 0.2*(Nz-1) <= k <= 0.8*(Nz-1):
+    #                         obstacle[i, j, k] = True
+    
+    # No obstacle/s
+    # for i in nb.prange(Nx):
+    #     i = np.int64(i)
+    #     for j in range(Ny):
+    #         for k in range(Nz):
+    #             obstacle[i, j, k] = False
+    
+    # Do nothing
+    return None
+
 
 
 #%% Solver Parameters
-sim_time = 1000 # simulation time [s] - adjust accordingly
 Nt = int(sim_time) # number of time steps (since dt=1)
-
-
 outevery = int(Nt/N_outputs) # generate an output every this many steps
-# outevery = 2
+# outevery = 1
+
+
+domain_dims = [Nx, Ny, Nz]
+n_lattice = Nx*Ny*Nz # total n.o. fluid nodes
+
+stopping_lims = []
+skip_stop_check = []
+for dim in range(len(domain_dims)):
+    
+    if (BCs[dim, 0] == 0) ^ (BCs[dim, 1] == 0):
+        raise ValueError(f'Periodic boundary conditions must be applied to both the upper and lower boundaries of a dimension, or neither (error for dimension {dim})')
+    
+    periodic_BC = (BCs[dim, 0] == 0) and (BCs[dim, 1] == 0)
+    if periodic_BC:
+        dim_lim = [None, None]
+    else:
+        dim_lim = [stop_dist, (domain_dims[dim]-1)-stop_dist]
+    skip_stop_check.append(periodic_BC)
+    stopping_lims.append(dim_lim.copy())
+
 
 LBM_consts = get_LBM_consts(nu)
 inv_cs2 = LBM_consts['inv_cs2']
@@ -126,6 +208,7 @@ c = LBM_consts['c']
 inv_cx_indx = LBM_consts['inv_cx_indx']
 inv_cy_indx = LBM_consts['inv_cy_indx']
 inv_cz_indx = LBM_consts['inv_cz_indx']
+inv_c_indx = LBM_consts['inv_c_indx']
 
 est_mem_req = 2.1*Nx*Ny*Nz*N_vels*8.0 # very rough estimation
 if est_mem_req > max_mem_avail:
@@ -138,6 +221,21 @@ else:
 
 
 #%% Brownian Motion
+@nb.jit(nopython=True, parallel=True, fastmath=True)
+def brownian_forcing(N_markers, marker_f):
+    """
+    Brownian forcing function.
+    
+    Large marker forces can cause instabilities.
+    """
+    # print(marker_vel, np.size(marker_vel))
+
+    for m in nb.prange(N_markers):
+        np.int64(m)
+        marker_f[m, 0] = np.random.normal(0, 1)*(2*gamma*kB_T)**(1/2) # dt = 1
+        marker_f[m, 1] = np.random.normal(0, 1)*(2*gamma*kB_T)**(1/2) # dt = 1
+        marker_f[m, 2] = np.random.normal(0, 1)*(2*gamma*kB_T)**(1/2) # dt = 1
+
 
 #%% Initialisation Functions
 def initialise_fluid_arrays(Nx, Ny, Nz, rho_0, rho, u, u_mag_sq, F, pops_pre, pops_post):
@@ -169,6 +267,10 @@ pops_pre = np.empty((Nx, Ny, Nz, N_vels), dtype=np.float64) # discrete velocity 
 pops_post = np.empty_like(pops_pre) # second DVDF array for efficient data writing during streaming
 
 
+# Obstacle Array
+obstacle = np.zeros_like(rho, dtype=bool)
+
+
 # IBM Setup
 if IB_kernel == 'standard gaussian':
     r_gaus = r_particle
@@ -184,7 +286,6 @@ elif IB_kernel == 'dual gaussian':
     dist_func = dual_gaus_dist
 r_cutoff_outer_sq = r_cutoff_outer*r_cutoff_outer
 r_cutoff_inner_sq = r_cutoff_inner*r_cutoff_inner
-
 
 
 # IBM Arrays
@@ -206,6 +307,7 @@ marker_nh = np.empty((N_markers, 5, max_marker_neighbours), dtype=np.float64) # 
 # Initialise Arrays
 initialise_fluid_arrays(Nx, Ny, Nz, rho_0, rho, u, u_mag_sq, F, pops_pre, pops_post)
 initialise_IBM(init_marker_pos, marker_pos, marker_vel, marker_f)
+initialise_obstacle(obstacle, Nx, Ny, Nz)
 
 
 
@@ -240,10 +342,13 @@ def save_marker_data(step, marker_pos_hist, marker_vel_hist, marker_f_hist, N_ma
 
 
 
-def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos, marker_vel, marker_f, marker_nh, marker_nh_size, 
+import imageio.v2 as imageio  # Nécessaire pour la création du GIF
+import io
+def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, marker_pos, marker_vel, marker_f, marker_nh, marker_nh_size, 
                  Nt, Nx, Ny, Nz, n_lattice, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, dist_func, r_gaus, sigma, A, stopping_lims, 
-                 inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, live_flow_plot, outevery):
-    
+                 inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, BCs, skip_stop_check, 
+                live_flow_plot, outevery, collide_forced):
+
     break_cond = False
     int_err = 0.0
     u_mag_sq_max = 0.0
@@ -255,31 +360,37 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
 
     iterations = tqdm.tqdm(range(Nt)) # initialise progress bar
     start_time = time.perf_counter()
+        
+    gif_frames = []
+    
     for t in iterations:
+        
         if np.isnan(u_mag_sq).any():
             raise RuntimeError(f'Unrealistic velocities: t={t}')
         
         
         # Calculate marker forces
-        #brownian_forcing(N_markers, marker_f)
+        if collide_forced == "initial":
+            brownian_forcing(N_markers, marker_f)
         
         # Calculate forcing due to IB markers
         int_err = IB_force_density(Nx, Ny, Nz, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, F, 
                                    dist_func, r_gaus, sigma, A, N_markers, marker_pos, marker_f, marker_nh, marker_nh_size, int_err)
         
         # Calculate fluid properties, perform collisions, and stream populations
-        # update_LBM_pops_closed_combined(t, pops_pre, pops_post, F, rho, u, u_mag_sq, Nx, Ny, Nz, 
-        #                                 inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, 
-        #                                 N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx)
-        update_LBM_pops_closed(pops_pre, pops_post, F, rho, u, u_mag_sq, Nx, Ny, Nz, 
+        update_LBM_pops_closed(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, Nx, Ny, Nz, 
                                inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, 
-                               N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, nu, kB_T)
- 
+                               N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, inv_c_indx, BCs, nu, kB_T, collide_forced)
+        
         # Interpolate boundary marker velocities
         interpolate_marker_vels(u, N_markers, marker_vel, marker_nh, marker_nh_size)
         
         # Integrate boundary markers
         marker_pos += marker_vel # since dt=1
+        
+        for dim in range(len(domain_dims)):
+            if skip_stop_check[dim]:
+                marker_pos[:, dim] %= (domain_dims[dim]-1)
         
         
         # Save marker data
@@ -292,9 +403,9 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
         # Check stopping criteria
         for m in range(N_markers):
             np.int64(m)
-            inbounds_x = stopping_lims[0][0] <= marker_pos[m, 0] <= stopping_lims[0][1]
-            inbounds_y = stopping_lims[1][0] <= marker_pos[m, 1] <= stopping_lims[1][1]
-            inbounds_z = stopping_lims[2][0] <= marker_pos[m, 2] <= stopping_lims[2][1]
+            inbounds_x = skip_stop_check[0] or (stopping_lims[0][0] <= marker_pos[m, 0] <= stopping_lims[0][1])
+            inbounds_y = skip_stop_check[1] or (stopping_lims[1][0] <= marker_pos[m, 1] <= stopping_lims[1][1])
+            inbounds_z = skip_stop_check[2] or (stopping_lims[2][0] <= marker_pos[m, 2] <= stopping_lims[2][1])
             if not (inbounds_x and inbounds_y and inbounds_z):
                 break_cond = True
                 save_data = True
@@ -303,42 +414,51 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
                 save_data = (t%outevery == 0) or (t == Nt-1)
         
         
-        # Output flow field at particle cross-section
+        # Enregistrement des frames pour le GIF au lieu de plt.show()
         if save_data and live_flow_plot:
             u_mag_sq_curr = np.max(u_mag_sq)
             if u_mag_sq_curr > u_mag_sq_max:
                 u_mag_sq_max = u_mag_sq_curr
             
             m = 0 # only plot the first marker
-            
             z_slice = min(max(int(round(marker_pos[m, 2])), 0), Nz-1)
             
-            plt.figure(figsize=(5, 4))
-            im = plt.imshow(np.sqrt(u_mag_sq[:, :, z_slice]).T, cmap='viridis', origin='lower', vmin=0, vmax=u_mag_sq_max**0.5)
-            # im = plt.imshow(u[:, :, z_slice, 0].T, cmap='viridis', origin='lower')
-            # im = plt.imshow(rho[:, :, z_slice].T, cmap='viridis', origin='lower')
-            # im = plt.imshow(F[:, :, z_slice, 0].T, cmap='viridis', origin='lower')
-            plt.colorbar(im, label='Velocity Magnitude')
+            fig, ax = plt.subplots(figsize=(5, 4))
+            im = ax.imshow(np.sqrt(u_mag_sq[:, :, z_slice]).T, cmap='viridis', origin='lower', vmin=0, vmax=u_mag_sq_max**0.5)
+            fig.colorbar(im, ax=ax, label='Velocity Magnitude')
             
             for m in range(N_markers):
-                plt.plot(marker_pos_hist[m, :t+1, 0], marker_pos_hist[m, :t+1, 1], 'r', alpha=0.5)
-                plt.plot(init_marker_pos[m, 0], init_marker_pos[m, 1], 'xr')
+                ax.plot(marker_pos_hist[m, :t+1, 0], marker_pos_hist[m, :t+1, 1], 'r', alpha=0.5)
+                ax.plot(init_marker_pos[m, 0], init_marker_pos[m, 1], 'xr')
                 
                 circle = plt.Circle((marker_pos[m, 0], marker_pos[m, 1]), r_particle, color='red', fill=False, linewidth=1.5)
-                plt.gca().add_patch(circle)
+                ax.add_patch(circle)
             
-            plt.xlim([0, Nx-1])
-            plt.ylim([0, Ny-1])
+            ax.set_xlim([0, Nx-1])
+            ax.set_ylim([0, Ny-1])
+            ax.set_title(f'3D Particle Diffusion - {IB_kernel} IBM\nZ Position = {z_slice}, t = {t}')
+            ax.set_xlabel('X Position')
+            ax.set_ylabel('Y Position')
+            fig.tight_layout()
             
-            plt.title(f'3D Particle Diffusion - {IB_kernel} IBM\nZ Position = {z_slice}, t = {t}')
-            plt.xlabel('X Position')
-            plt.ylabel('Y Position')
-            plt.tight_layout()
-            # plt.savefig(f'{t}_diff_ani.png')
-            plt.show()
+            # Capture de la figure dans un buffer mémoire (sans l'afficher à l'écran)
+            buf = io.BytesIO()
+            fig.savefig(buf, format='png', dpi=100)
+            buf.seek(0)
+            gif_frames.append(imageio.imread(buf))
+            plt.close(fig) # Ferme la figure pour libérer la mémoire RAM
         
         if break_cond:
             break
+
+    # --- GÉNÉRATION ET AFFICHAGE DU GIF À LA FIN ---
+    if live_flow_plot and len(gif_frames) > 0:
+        gif_filename = 'diffusion_simulation.gif'
+        imageio.mimsave(gif_filename, gif_frames, fps=10, loop=0)
+        print(f"\nGIF généré avec succès : {gif_filename}")
+    
+    if not (inbounds_x and inbounds_y and inbounds_z):
+        print(f'Particle exceeded simulation domain cutoff (boundary cutoff distance = {stop_dist})')
 
     end_time = time.perf_counter()
     loop_wt = end_time - start_time
@@ -362,28 +482,29 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
 
 
 
-sim_res = run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos, marker_vel, marker_f, marker_nh, marker_nh_size, 
-                       Nt, Nx, Ny, Nz, n_lattice, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, dist_func, r_gaus, sigma, A, stopping_lims, 
-                       inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, live_flow_plot, outevery)
+#sim_res = run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, marker_pos, marker_vel, marker_f, marker_nh, marker_nh_size, 
+                        # Nt, Nx, Ny, Nz, n_lattice, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, dist_func, r_gaus, sigma, A, stopping_lims, 
+                        # inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, 
+                        # BCs, skip_stop_check, live_flow_plot, outevery, collide_forced)
 
-marker_pos_hist, marker_vel_hist, marker_f_hist, fluid_mass_hist, simtime_reached = sim_res
+# marker_pos_hist, marker_vel_hist, marker_f_hist, fluid_mass_hist, simtime_reached = sim_res
 
 
 
-if show_mass:
-    # Plot Fluid Mass
-    N_steps = fluid_mass_hist.size
-    time_hist = np.arange(0, N_steps)
-    init_mass = fluid_mass_hist[0]
-    rel_mass_change = 100*(fluid_mass_hist-init_mass)/init_mass
+# if show_mass:
+#     # Plot Fluid Mass
+#     N_steps = fluid_mass_hist.size
+#     time_hist = np.arange(0, N_steps)
+#     init_mass = fluid_mass_hist[0]
+#     rel_mass_change = 100*(fluid_mass_hist-init_mass)/init_mass
     
-    fig_mass = plt.figure(figsize=(6, 4))
-    plt.plot(time_hist, rel_mass_change, 'b-')
-    plt.title('Domain Mass Integral')
-    plt.xlabel('Time')
-    plt.ylabel('Relative Mass Change (%)')
-    plt.grid()
-    plt.show()
+#     fig_mass = plt.figure(figsize=(6, 4))
+#     plt.plot(time_hist, rel_mass_change, 'b-')
+#     plt.title('Domain Mass Integral')
+#     plt.xlabel('Time')
+#     plt.ylabel('Relative Mass Change (%)')
+#     plt.grid()
+#     plt.show()
 
 
 
