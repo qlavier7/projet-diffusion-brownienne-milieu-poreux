@@ -1,7 +1,7 @@
 import copy
 import numpy as np
-from IB_LBM_particle_diff import run_diff_sim, initialise_fluid_arrays, initialise_IBM
-from forced_LBGK_lib import get_LBM_consts
+from obs_IB_LBM_particle_diff_example import run_diff_sim, initialise_fluid_arrays, initialise_IBM, initialise_obstacle
+from obs_forced_LBGK_lib import get_LBM_consts
 from multi_marker_IBM_lib import gaus_consts, gaus_dist, dual_gaus_consts, dual_gaus_dist, plot_gaus_dist, IB_force_density, interpolate_marker_vels
 import matplotlib.pyplot as plt
 
@@ -53,6 +53,7 @@ u_mag_sq = np.empty_like(rho) # squared velocity magnitudes
 F = np.empty_like(u) # body forces
 pops_pre = np.empty((Nx, Ny, Nz, N_vels), dtype=np.float64) # discrete velocity distribution functions
 pops_post = np.empty_like(pops_pre) # second DVDF array for efficient data writing during streaming
+obstacle = np.zeros_like(rho, dtype=bool)
 
 if IB_kernel == 'standard gaussian':
     r_gaus = r_particle
@@ -86,8 +87,35 @@ marker_nh = np.empty((N_markers, 5, max_marker_neighbours), dtype=np.float64) # 
 # Initialise Arrays
 initialise_fluid_arrays(Nx, Ny, Nz, rho_0, rho, u, u_mag_sq, F, pops_pre, pops_post)
 initialise_IBM(init_marker_pos, marker_pos, marker_vel, marker_f)
+initialise_obstacle(obstacle, Nx, Ny, Nz)
 
 collide_forced = ['initial', 'fluctuation'][0]
+
+# Fluid Domain Boundary Conditions
+## BCs = [[x_low, x_high], [y_low, y_high], [z_low, z_high]]
+## 0 = periodic boundary, 1 = slip boundary, 2 = no-slip boundary
+## When using periodic boundaries, both i_low and i_high must == 0
+BCs = [[0, 0], [0, 0], [0, 0]] # ex: all periodic
+# BCs = [[1, 1], [1, 1], [1, 1]] # ex: all slip
+# BCs = [[2, 2], [2, 2], [2, 2]] # ex: all no-slip
+# BCs = [[0, 0], [2, 2], [2, 2]] # ex: x periodic, y/z no-slip
+BCs = np.array(BCs, dtype=np.uint8)
+domain_dims = [Nx, Ny, Nz]
+stopping_lims = []
+skip_stop_check = []
+for dim in range(len(domain_dims)):
+    
+    if (BCs[dim, 0] == 0) ^ (BCs[dim, 1] == 0):
+        raise ValueError(f'Periodic boundary conditions must be applied to both the upper and lower boundaries of a dimension, or neither (error for dimension {dim})')
+    
+    periodic_BC = (BCs[dim, 0] == 0) and (BCs[dim, 1] == 0)
+    if periodic_BC:
+        dim_lim = [None, None]
+    else:
+        dim_lim = [stop_dist, (domain_dims[dim]-1)-stop_dist]
+    skip_stop_check.append(periodic_BC)
+    stopping_lims.append(dim_lim.copy())
+
 #%% 
 
 
@@ -111,7 +139,7 @@ def get_fresh_params(state):
 
 
 Matrix = []
-N_simulations = 1000
+N_simulations = 100
 
 for i in range(N_simulations):
     print(f"Étape {i}")
@@ -122,49 +150,10 @@ for i in range(N_simulations):
     )
     initialise_IBM(init_marker_pos, marker_pos, marker_vel, marker_f)
 
-    sim_res = run_diff_sim(
-        pops_pre,
-        pops_post,
-        F,
-        rho,
-        u,
-        u_mag_sq,
-        N_markers,
-        marker_pos,
-        marker_vel,
-        marker_f,
-        marker_nh,
-        marker_nh_size,
-        Nt,
-        Nx,
-        Ny,
-        Nz,
-        n_lattice,
-        r_cutoff_outer,
-        r_cutoff_outer_sq,
-        r_cutoff_inner_sq,
-        dist_func,
-        r_gaus,
-        sigma,
-        A,
-        stopping_lims,
-        inv_cs2,
-        inv_2cs2,
-        inv_cs4,
-        inv_2cs4,
-        omega,
-        omega_prime,
-        omega_S_coeff,
-        N_vels,
-        w,
-        c,
-        inv_cx_indx,
-        inv_cy_indx,
-        inv_cz_indx,
-        live_flow_plot,
-        outevery,
-        collide_forced,
-    )
+    sim_res = run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, marker_pos, marker_vel, marker_f, marker_nh, marker_nh_size, 
+                 Nt, Nx, Ny, Nz, n_lattice, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, dist_func, r_gaus, sigma, A, stopping_lims, 
+                 inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, BCs, skip_stop_check, 
+                live_flow_plot, outevery, collide_forced)
 
     marker_pos_hist = sim_res[0]
 

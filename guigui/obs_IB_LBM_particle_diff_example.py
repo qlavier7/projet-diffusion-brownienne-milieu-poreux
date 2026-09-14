@@ -71,7 +71,7 @@ max_mem_avail = 12.0e9 # maximum available memory [bytes]
 
 # Graphing and Outputs
 show_gaus_dist = False # plot the y distribution of the force distribution function
-live_flow_plot = True # plot the flow field during the simulation
+live_flow_plot = False # plot the flow field during the simulation
 N_outputs = 10 # n.o. times to plot the solution field (only if live_flow_plot=True)
 show_mass = False # plot the total fluid mass over the simulation duration - can be useful for identifying instabilities (should remain constant)
 
@@ -94,7 +94,7 @@ BCs = np.array(BCs, dtype=np.uint8)
 # Geometry
 D_particle = 7 # number of lattice points across the particle diameter
 r_particle = D_particle/2 # particle radius
-spacing_mutl = 10 # control the spacing between the particle and the domain walls
+spacing_mutl = 3 # control the spacing between the particle and the domain walls
 
 Nx = int(spacing_mutl*D_particle+1) # simulation domain length
 Ny = Nx # simulation domain height
@@ -346,7 +346,7 @@ import imageio.v2 as imageio  # Nécessaire pour la création du GIF
 import io
 def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, marker_pos, marker_vel, marker_f, marker_nh, marker_nh_size, 
                  Nt, Nx, Ny, Nz, n_lattice, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, dist_func, r_gaus, sigma, A, stopping_lims, 
-                 inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, linv_c_indx, BCs, skip_stop_check, 
+                 inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, BCs, skip_stop_check, 
                 live_flow_plot, outevery, collide_forced):
 
     break_cond = False
@@ -482,10 +482,10 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
 
 
 
-sim_res = run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, marker_pos, marker_vel, marker_f, marker_nh, marker_nh_size, 
-                        Nt, Nx, Ny, Nz, n_lattice, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, dist_func, r_gaus, sigma, A, stopping_lims, 
-                        inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, 
-                        inv_c_indx, BCs, skip_stop_check, live_flow_plot, outevery, collide_forced)
+#sim_res = run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, marker_pos, marker_vel, marker_f, marker_nh, marker_nh_size, 
+                        # Nt, Nx, Ny, Nz, n_lattice, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, dist_func, r_gaus, sigma, A, stopping_lims, 
+                        # inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, 
+                        # BCs, skip_stop_check, live_flow_plot, outevery, collide_forced)
 
 # marker_pos_hist, marker_vel_hist, marker_f_hist, fluid_mass_hist, simtime_reached = sim_res
 
