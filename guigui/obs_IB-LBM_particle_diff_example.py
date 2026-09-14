@@ -110,7 +110,7 @@ stop_dist = r_particle # minimum distance from the particle to the wall before t
 #stopping_lims = [[stop_dist, Nx-1-stop_dist], [stop_dist, Ny-1-stop_dist], [stop_dist, Nz-1-stop_dist]]
 
 # IBM
-IB_kernel = ['standard gaussian', 'dual gaussian'][1] # force distribution function to use
+IB_kernel = ['standard gaussian', 'dual gaussian'][0] # force distribution function to use
 f_dist_width = 2 # width of the surface gaussian force distribution function [lattice points] (only for dual gaussian IB kernel)
 
 
@@ -121,9 +121,9 @@ mu = rho_0*nu # dynamic viscosity [kg m-1 s-1]
 
 
 # Diffusion
-kB_T = 0.02
+kB_T = 0.005
 gamma = 6*np.pi*mu*r_particle # drag coefficient
-collide_forced = ['initial', 'fluctuation'][0] # which collision method to use for the fluctuating hydrodynamics approach
+collide_forced = ['initial', 'fluctuation'][1] # which collision method to use for the fluctuating hydrodynamics approach
 
 
 
@@ -268,7 +268,7 @@ pops_post = np.empty_like(pops_pre) # second DVDF array for efficient data writi
 
 
 # Obstacle Array
-obstacle = np.zeros_like(rho, dtype=np.bool)
+obstacle = np.zeros_like(rho, dtype=bool)
 
 
 # IBM Setup
@@ -344,10 +344,11 @@ def save_marker_data(step, marker_pos_hist, marker_vel_hist, marker_f_hist, N_ma
 
 import imageio.v2 as imageio  # Nécessaire pour la création du GIF
 import io
-def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos, marker_vel, marker_f, marker_nh, marker_nh_size, 
+def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, marker_pos, marker_vel, marker_f, marker_nh, marker_nh_size, 
                  Nt, Nx, Ny, Nz, n_lattice, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, dist_func, r_gaus, sigma, A, stopping_lims, 
-                 inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, live_flow_plot, outevery, collide_forced):
-    
+                 inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, linv_c_indx, BCs, skip_stop_check, 
+                live_flow_plot, outevery, collide_forced):
+
     break_cond = False
     int_err = 0.0
     u_mag_sq_max = 0.0
@@ -481,10 +482,10 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
 
 
 
-# sim_res = run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, marker_pos, marker_vel, marker_f, marker_nh, marker_nh_size, 
-#                        Nt, Nx, Ny, Nz, n_lattice, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, dist_func, r_gaus, sigma, A, stopping_lims, 
-#                        inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, inv_c_indx, BCs, skip_stop_check, 
-#                        live_flow_plot, outevery)
+sim_res = run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, marker_pos, marker_vel, marker_f, marker_nh, marker_nh_size, 
+                        Nt, Nx, Ny, Nz, n_lattice, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, dist_func, r_gaus, sigma, A, stopping_lims, 
+                        inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, 
+                        inv_c_indx, BCs, skip_stop_check, live_flow_plot, outevery, collide_forced)
 
 # marker_pos_hist, marker_vel_hist, marker_f_hist, fluid_mass_hist, simtime_reached = sim_res
 
