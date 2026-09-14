@@ -71,8 +71,8 @@ max_mem_avail = 12.0e9 # maximum available memory [bytes]
 
 # Graphing and Outputs
 show_gaus_dist = False # plot the y distribution of the force distribution function
-live_flow_plot = False # plot the flow field during the simulation
-N_outputs = 10 # n.o. times to plot the solution field (only if live_flow_plot=True)
+live_flow_plot = True # plot the flow field during the simulation
+N_outputs = 5 # n.o. times to plot the solution field (only if live_flow_plot=True)
 show_mass = False # plot the total fluid mass over the simulation duration - can be useful for identifying instabilities (should remain constant)
 
 
@@ -94,7 +94,7 @@ BCs = np.array(BCs, dtype=np.uint8)
 # Geometry
 D_particle = 7 # number of lattice points across the particle diameter
 r_particle = D_particle/2 # particle radius
-spacing_mutl = 10 # control the spacing between the particle and the domain walls
+spacing_mutl = 3 # control the spacing between the particle and the domain walls
 
 Nx = int(spacing_mutl*D_particle+1) # simulation domain length
 Ny = Nx # simulation domain height
@@ -123,7 +123,7 @@ mu = rho_0*nu # dynamic viscosity [kg m-1 s-1]
 # Diffusion
 kB_T = 0.005
 gamma = 6*np.pi*mu*r_particle # drag coefficient
-collide_forced = ['initial', 'fluctuation'][1] # which collision method to use for the fluctuating hydrodynamics approach
+brownian_method = ['none', 'force', 'fluctuation'][2] # which method to use for the brownian motion of the particle - 'none' = no forcing, 'force' = Langevin approach, 'fluctuation' = fluctuating hydrodynamics approach
 
 
 
@@ -307,7 +307,7 @@ marker_nh = np.empty((N_markers, 5, max_marker_neighbours), dtype=np.float64) # 
 # Initialise Arrays
 initialise_fluid_arrays(Nx, Ny, Nz, rho_0, rho, u, u_mag_sq, F, pops_pre, pops_post)
 initialise_IBM(init_marker_pos, marker_pos, marker_vel, marker_f)
-initialise_obstacle(obstacle, Nx, Ny, Nz)
+# initialise_obstacle(obstacle, Nx, Ny, Nz)
 
 
 
@@ -347,7 +347,7 @@ import io
 def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, marker_pos, marker_vel, marker_f, marker_nh, marker_nh_size, 
                  Nt, Nx, Ny, Nz, n_lattice, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, dist_func, r_gaus, sigma, A, stopping_lims, 
                  inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, BCs, skip_stop_check, 
-                live_flow_plot, outevery, collide_forced):
+                live_flow_plot, outevery, brownian_method):
 
     break_cond = False
     int_err = 0.0
@@ -370,7 +370,7 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
         
         
         # Calculate marker forces
-        if collide_forced == "initial":
+        if brownian_method == "force":
             brownian_forcing(N_markers, marker_f)
         
         # Calculate forcing due to IB markers
@@ -380,7 +380,7 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
         # Calculate fluid properties, perform collisions, and stream populations
         update_LBM_pops_closed(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, Nx, Ny, Nz, 
                                inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, 
-                               N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, inv_c_indx, BCs, nu, kB_T, collide_forced)
+                               N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, inv_c_indx, BCs, nu, kB_T, brownian_method)
         
         # Interpolate boundary marker velocities
         interpolate_marker_vels(u, N_markers, marker_vel, marker_nh, marker_nh_size)
@@ -482,34 +482,26 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
 
 
 
-#sim_res = run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, marker_pos, marker_vel, marker_f, marker_nh, marker_nh_size, 
-                        # Nt, Nx, Ny, Nz, n_lattice, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, dist_func, r_gaus, sigma, A, stopping_lims, 
-                        # inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, 
-                        # BCs, skip_stop_check, live_flow_plot, outevery, collide_forced)
+sim_res = run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, marker_pos, marker_vel, marker_f, marker_nh, marker_nh_size, 
+                        Nt, Nx, Ny, Nz, n_lattice, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, dist_func, r_gaus, sigma, A, stopping_lims, 
+                        inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, 
+                        BCs, skip_stop_check, live_flow_plot, outevery, brownian_method)
 
-# marker_pos_hist, marker_vel_hist, marker_f_hist, fluid_mass_hist, simtime_reached = sim_res
+marker_pos_hist, marker_vel_hist, marker_f_hist, fluid_mass_hist, simtime_reached = sim_res
 
 
 
-# if show_mass:
-#     # Plot Fluid Mass
-#     N_steps = fluid_mass_hist.size
-#     time_hist = np.arange(0, N_steps)
-#     init_mass = fluid_mass_hist[0]
-#     rel_mass_change = 100*(fluid_mass_hist-init_mass)/init_mass
+if show_mass:
+    # Plot Fluid Mass
+    N_steps = fluid_mass_hist.size
+    time_hist = np.arange(0, N_steps)
+    init_mass = fluid_mass_hist[0]
+    rel_mass_change = 100*(fluid_mass_hist-init_mass)/init_mass
     
-#     fig_mass = plt.figure(figsize=(6, 4))
-#     plt.plot(time_hist, rel_mass_change, 'b-')
-#     plt.title('Domain Mass Integral')
-#     plt.xlabel('Time')
-#     plt.ylabel('Relative Mass Change (%)')
-#     plt.grid()
-#     plt.show()
-
-
-
-
-
-
-
-
+    fig_mass = plt.figure(figsize=(6, 4))
+    plt.plot(time_hist, rel_mass_change, 'b-')
+    plt.title('Domain Mass Integral')
+    plt.xlabel('Time')
+    plt.ylabel('Relative Mass Change (%)')
+    plt.grid()
+    plt.show()

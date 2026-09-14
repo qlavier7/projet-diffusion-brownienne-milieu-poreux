@@ -213,7 +213,7 @@ def calc_Fi_comp_BGK(Fx, Fy, Fz, ux, uy, uz, cu, cx, cy, cz, w, inv_cs2, inv_cs4
 
 #%% BGK Forced Collision
 @nb.jit(nopython=True, parallel=True, fastmath=True)
-def collide_forced_initial(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, 
+def collide_forced(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, 
                    inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, obstacle):
 
     """
@@ -831,7 +831,7 @@ def initialise_pops(pops, F, u, u_mag2, Nx, Ny, Nz, rho_0, inv_cs2, inv_2cs2, in
 #%% Complete LBM Update Functions
 def update_LBM_pops_closed(pops_pre, pops_post, F, rho, u, u_mag2, obstacle, Nx, Ny, Nz, 
                            inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, 
-                           N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, inv_c_indx, BCs, nu, kB_T, collide_forced):
+                           N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, inv_c_indx, BCs, nu, kB_T, brownian_method):
 
     """
     Updates the paricle populations for one time step using the quasi-
@@ -897,10 +897,10 @@ def update_LBM_pops_closed(pops_pre, pops_post, F, rho, u, u_mag2, obstacle, Nx,
     """
     
 # Calculate fluid properties and perform collisions
-    if collide_forced == "fluctuation":
+    if brownian_method == "fluctuation":
         collide_forced_fluctuation(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega_S_coeff, N_vels, w, c, nu, kB_T, obstacle)
-    elif collide_forced == "initial":
-        collide_forced_initial(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, obstacle)
+    else:
+        collide_forced(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, obstacle)
     
     # Stream populations
     stream_closed(pops_pre, pops_post, obstacle, Nx, Ny, Nz, N_vels, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, inv_c_indx, BCs)
