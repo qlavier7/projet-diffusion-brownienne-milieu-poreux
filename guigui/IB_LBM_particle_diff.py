@@ -65,14 +65,14 @@ max_mem_avail = 12.0e9 # maximum available memory [bytes]
 # Graphing and Outputs
 show_gaus_dist = False # plot the y distribution of the force distribution function
 live_flow_plot = True # plot the flow field during the simulation
-N_outputs = 5 # n.o. times to plot the solution field (only if live_flow_plot=True)
+N_outputs = 100 # n.o. times to plot the solution field (only if live_flow_plot=True)
 show_mass = False # plot the total fluid mass over the simulation duration - can be useful for identifying instabilities (should remain constant)
 
 
 # Geometry
 D_particle = 7 #7 # number of lattice points across the particle diameter
 r_particle = D_particle/2 # particle radius
-spacing_mutl = 4 #10 # control the spacing between the particle and the domain walls
+spacing_mutl = 5 #10 # control the spacing between the particle and the domain walls
 
 Nx = int(spacing_mutl*D_particle+1) # simulation domain length
 Ny = Nx # simulation domain height
@@ -100,12 +100,12 @@ mu = rho_0*nu # dynamic viscosity [kg m-1 s-1]
 
 
 # Diffusion
-kB_T = 1.0
+kB_T = 0.02
 gamma = 6*np.pi*mu*r_particle # drag coefficient
 collide_forced = ['initial', 'fluctuation'][0] # which collision method to use for the fluctuating hydrodynamics approach
 
 #%% Solver Parameters
-sim_time = 1000 # simulation time [s] - adjust accordingly
+sim_time = 10000 # simulation time [s] - adjust accordingly
 Nt = int(sim_time) # number of time steps (since dt=1)
 
 
@@ -255,10 +255,11 @@ def save_marker_data(step, marker_pos_hist, marker_vel_hist, marker_f_hist, N_ma
         marker_f_hist[m, step, 2] = marker_f[m, 2]
 
 
-
+import imageio.v2 as imageio  # Nécessaire pour la création du GIF
+import io
 def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos, marker_vel, marker_f, marker_nh, marker_nh_size, 
                  Nt, Nx, Ny, Nz, n_lattice, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, dist_func, r_gaus, sigma, A, stopping_lims, 
-                 inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, live_flow_plot, outevery):
+                 inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, live_flow_plot, outevery, collide_forced):
     
     break_cond = False
     int_err = 0.0
@@ -271,6 +272,9 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
 
     iterations = tqdm.tqdm(range(Nt)) # initialise progress bar
     start_time = time.perf_counter()
+    
+    gif_frames = []
+    
     for t in iterations:
         if np.isnan(u_mag_sq).any():
             raise RuntimeError(f'Unrealistic velocities: t={t}')
@@ -320,42 +324,50 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
                 save_data = (t%outevery == 0) or (t == Nt-1)
         
         
-        # Output flow field at particle cross-section
+        # Enregistrement des frames pour le GIF au lieu de plt.show()
         if save_data and live_flow_plot:
             u_mag_sq_curr = np.max(u_mag_sq)
             if u_mag_sq_curr > u_mag_sq_max:
                 u_mag_sq_max = u_mag_sq_curr
             
             m = 0 # only plot the first marker
-            
             z_slice = min(max(int(round(marker_pos[m, 2])), 0), Nz-1)
             
-            plt.figure(figsize=(5, 4))
-            im = plt.imshow(np.sqrt(u_mag_sq[:, :, z_slice]).T, cmap='viridis', origin='lower', vmin=0, vmax=u_mag_sq_max**0.5)
-            # im = plt.imshow(u[:, :, z_slice, 0].T, cmap='viridis', origin='lower')
-            # im = plt.imshow(rho[:, :, z_slice].T, cmap='viridis', origin='lower')
-            # im = plt.imshow(F[:, :, z_slice, 0].T, cmap='viridis', origin='lower')
-            plt.colorbar(im, label='Velocity Magnitude')
+            fig, ax = plt.subplots(figsize=(5, 4))
+            im = ax.imshow(np.sqrt(u_mag_sq[:, :, z_slice]).T, cmap='viridis', origin='lower', vmin=0, vmax=u_mag_sq_max**0.5)
+            fig.colorbar(im, ax=ax, label='Velocity Magnitude')
             
             for m in range(N_markers):
-                plt.plot(marker_pos_hist[m, :t+1, 0], marker_pos_hist[m, :t+1, 1], 'r', alpha=0.5)
-                plt.plot(init_marker_pos[m, 0], init_marker_pos[m, 1], 'xr')
+                ax.plot(marker_pos_hist[m, :t+1, 0], marker_pos_hist[m, :t+1, 1], 'r', alpha=0.5)
+                ax.plot(init_marker_pos[m, 0], init_marker_pos[m, 1], 'xr')
                 
                 circle = plt.Circle((marker_pos[m, 0], marker_pos[m, 1]), r_particle, color='red', fill=False, linewidth=1.5)
-                plt.gca().add_patch(circle)
+                ax.add_patch(circle)
             
-            plt.xlim([0, Nx-1])
-            plt.ylim([0, Ny-1])
+            ax.set_xlim([0, Nx-1])
+            ax.set_ylim([0, Ny-1])
+            ax.set_title(f'3D Particle Diffusion - {IB_kernel} IBM\nZ Position = {z_slice}, t = {t}')
+            ax.set_xlabel('X Position')
+            ax.set_ylabel('Y Position')
+            fig.tight_layout()
             
-            plt.title(f'3D Particle Diffusion - {IB_kernel} IBM\nZ Position = {z_slice}, t = {t}')
-            plt.xlabel('X Position')
-            plt.ylabel('Y Position')
-            plt.tight_layout()
-            # plt.savefig(f'{t}_diff_ani.png')
-            plt.show()
+            # Capture de la figure dans un buffer mémoire (sans l'afficher à l'écran)
+            buf = io.BytesIO()
+            fig.savefig(buf, format='png', dpi=100)
+            buf.seek(0)
+            gif_frames.append(imageio.imread(buf))
+            plt.close(fig) # Ferme la figure pour libérer la mémoire RAM
         
         if break_cond:
             break
+
+    # --- GÉNÉRATION ET AFFICHAGE DU GIF À LA FIN ---
+    if live_flow_plot and len(gif_frames) > 0:
+        gif_filename = 'diffusion_simulation.gif'
+        imageio.mimsave(gif_filename, gif_frames, fps=10, loop=0)
+        print(f"\nGIF généré avec succès : {gif_filename}")
+        
+
 
     end_time = time.perf_counter()
     loop_wt = end_time - start_time
@@ -379,28 +391,26 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos
 
 
 
-sim_res = run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos, marker_vel, marker_f, marker_nh, marker_nh_size, 
-                       Nt, Nx, Ny, Nz, n_lattice, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, dist_func, r_gaus, sigma, A, stopping_lims, 
-                       inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, live_flow_plot, outevery)
+#sim_res = run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, N_markers, marker_pos, marker_vel, marker_f, marker_nh, marker_nh_size, Nt, Nx, Ny, Nz, n_lattice, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, dist_func, r_gaus, sigma, A, stopping_lims, inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, live_flow_plot, outevery)
 
-marker_pos_hist, marker_vel_hist, marker_f_hist, fluid_mass_hist, simtime_reached = sim_res
+#marker_pos_hist, marker_vel_hist, marker_f_hist, fluid_mass_hist, simtime_reached = sim_res
 
 
 
-if show_mass:
+#if show_mass:
     # Plot Fluid Mass
-    N_steps = fluid_mass_hist.size
-    time_hist = np.arange(0, N_steps)
-    init_mass = fluid_mass_hist[0]
-    rel_mass_change = 100*(fluid_mass_hist-init_mass)/init_mass
+    # N_steps = fluid_mass_hist.size
+    # time_hist = np.arange(0, N_steps)
+    # init_mass = fluid_mass_hist[0]
+    # rel_mass_change = 100*(fluid_mass_hist-init_mass)/init_mass
     
-    fig_mass = plt.figure(figsize=(6, 4))
-    plt.plot(time_hist, rel_mass_change, 'b-')
-    plt.title('Domain Mass Integral')
-    plt.xlabel('Time')
-    plt.ylabel('Relative Mass Change (%)')
-    plt.grid()
-    plt.show()
+    # fig_mass = plt.figure(figsize=(6, 4))
+    # plt.plot(time_hist, rel_mass_change, 'b-')
+    # plt.title('Domain Mass Integral')
+    # plt.xlabel('Time')
+    # plt.ylabel('Relative Mass Change (%)')
+    # plt.grid()
+    # plt.show()
 
 
 
