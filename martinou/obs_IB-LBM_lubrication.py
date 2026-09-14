@@ -65,11 +65,12 @@ import os
 
 base_path = os.path.dirname(os.path.dirname(__file__))
 lib_path = os.path.join(base_path, "fluid solver code")
-
 sys.path.append(lib_path)
-
 from obs_forced_LBGK_lib import get_LBM_consts, initialise_pops, update_LBM_pops_closed
-from multi_marker_IBM_lib import gaus_consts, gaus_dist, dual_gaus_consts, dual_gaus_dist, plot_gaus_dist, IB_force_density, interpolate_marker_vels
+
+lib_path = os.path.join(base_path, "quentin")
+sys.path.append(lib_path)
+from multi_marker_IBM_lib_v2 import gaus_consts, gaus_dist, dual_gaus_consts, dual_gaus_dist, plot_gaus_dist, IB_force_density, interpolate_marker_vels
 
 max_mem_avail = 12.0e9 # maximum available memory [bytes]
 
@@ -82,11 +83,11 @@ show_gaus_dist = False # plot the y distribution of the force distribution funct
 live_flow_plot = True # plot the flow field during the simulation
 N_outputs = 10 # n.o. times to plot the solution field (only if live_flow_plot=True)
 show_mass = False # plot the total fluid mass over the simulation duration - can be useful for identifying instabilities (should remain constant)
-output_gif_filename = 'martinou/gif/sedimentation2'
+output_gif_filename = 'martinou/gif/sedimentation4'
 #output_figname = 'martinou/sedimentation.png'
 
 # Simulation Duration
-sim_time = 3000 # simulation time [s] - adjust accordingly
+sim_time = 2200 # simulation time [s] - adjust accordingly
 
 
 # Fluid Domain Boundary Conditions
@@ -314,6 +315,49 @@ def lubrication_correction_forcing(N_markers, marker_pos, marker_vel, marker_rad
 
     return h_wall_out
 
+@nb.jit(nopython=True, fastmath=True)
+def steric_repulsion_forcing(N_markers, marker_pos, marker_radii, marker_f,
+                              rho_p, eps_p):
+    """
+    Répulsion stérique à courte portée (modèle de Glowinski et al. 2001),
+    nécessaire en FCM/IBM car il n'y a pas d'exclusion de volume géométrique.
+    Empêche le chevauchement numérique des particules.
+    """
+    for m in range(N_markers):
+        for j in range(m+1, N_markers):
+            dx = marker_pos[m, 0] - marker_pos[j, 0]
+            dy = marker_pos[m, 1] - marker_pos[j, 1]
+            dz = marker_pos[m, 2] - marker_pos[j, 2]
+            dist = (dx*dx + dy*dy + dz*dz)**0.5
+
+            a_sum = marker_radii[m] + marker_radii[j]
+            gap_star = dist - a_sum  # peut être négatif si chevauchement
+
+            if gap_star <= rho_p:
+                overlap = max(a_sum + rho_p - dist, 0.0)
+                mag = (1.0/eps_p) * (overlap**2) / rho_p
+
+                # évite une division par zéro si dist -> 0 (chevauchement total)
+                dist_safe = max(dist, 1e-6)
+                fx = mag * dx/dist_safe
+                fy = mag * dy/dist_safe
+                fz = mag * dz/dist_safe
+
+                marker_f[m, 0] += fx
+                marker_f[m, 1] += fy
+                marker_f[m, 2] += fz
+                marker_f[j, 0] -= fx
+                marker_f[j, 1] -= fy
+                marker_f[j, 2] -= fz
+
+    # --- Wall ---
+    for m in range(N_markers):
+        gap = (marker_pos[m, 1] - marker_radii[m]) - wall_y
+        if gap <= rho_p:
+            overlap = max(rho_p - gap, 0.0)
+            mag = (1.0/eps_p) * (overlap**2) / rho_p
+            marker_f[m, 1] += mag  # pousse vers +y, loin du mur
+
 
 #%% Initialisation Functions
 def initialise_fluid_arrays(Nx, Ny, Nz, rho_0, rho, u, u_mag_sq, F, pops_pre, pops_post):
@@ -399,7 +443,7 @@ init_marker_pos[0, 0] = cx_particle
 init_marker_pos[0, 1] = cy_particle
 init_marker_pos[0, 2] = cz_particle
 
-init_marker_pos[1, 0] = cx_particle
+init_marker_pos[1, 0] = cx_particle + 0.1*D_particles[0]
 init_marker_pos[1, 1] = cy_particle + 1.6*D_particles[0]
 init_marker_pos[1, 2] = cz_particle
 
@@ -529,7 +573,15 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
         h_wall = lubrication_correction_forcing(N_markers, marker_pos, marker_vel, marker_radii, marker_f, 
                                                 wall_y, lubrication_threshold, rho_0, nu, dt=1.0, h_floor=1e-4)
         h_walls.append(h_wall)
+
+        steric_repulsion_forcing(N_markers, marker_pos, marker_radii, marker_f,
+                          rho_p=0.1*np.min(marker_radii), eps_p=1e-2)
         
+        """# Fixer la particule 1
+        marker_f[0, 0] = 0.5*(init_marker_pos[0, 0] - marker_pos[0, 0])  # force to keep particle 1 at its initial x position
+        marker_f[0, 1] = 0.5*(init_marker_pos[0, 1] - marker_pos[0, 1]) # force to keep particle 1 at its initial y position
+        marker_f[0, 2] = 0.5*(init_marker_pos[0, 2] - marker_pos[0, 2]) # force to keep particle 1 at its initial z position
+        """
         # Calculate forcing due to IB markers
         int_err = IB_force_density(Nx, Ny, Nz, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, F, 
                                   dist_func, r_gaus, sigma, A, N_markers, marker_pos, marker_f, marker_nh, marker_nh_size, int_err)
