@@ -9,9 +9,6 @@ get_LBM_consts:
     Calculates useful constants and velocity/weighting arrays for the D3Q19 LBM.
 initialise_pops:
     Initialises particle populations.
-update_LBM_pops_1D_flow:
-    Updates populations for one time step for a 1D flow domain with separate
-    collision/streaming steps.
 update_LBM_pops_closed:
     Updates populations for one time step for a closed domain with separate
     collision/streaming steps.
@@ -212,9 +209,12 @@ def calc_Fi_comp_BGK(Fx, Fy, Fz, ux, uy, uz, cu, cx, cy, cz, w, inv_cs2, inv_cs4
     F_i = w*(Fc*(inv_cs2 + cu*inv_cs4) - Fu*inv_cs2)
     return F_i
 
+
+
+#%% BGK Forced Collision
 @nb.jit(nopython=True, parallel=True, fastmath=True)
 def collide_forced_initial(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, 
-                   inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c):
+                   inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, obstacle):
     """
     Calculates and saves the velocity and density fields from the current 
     populations and performs the BGK collision globally with Guo forcing.
@@ -233,6 +233,8 @@ def collide_forced_initial(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz,
         fluid velocity field. ndims=4, dtype=float
     u_mag2 : ndarray
         fluid velocity squared magnitude field. ndims=3, dtype=float
+    obstacle : ndarray
+        obstacle mask. ndims=3, dtype=bool
     Nx : int
         number of fluid cells in the x direction.
     Ny : int
@@ -269,6 +271,9 @@ def collide_forced_initial(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz,
         i = np.int64(i)
         for j in range(Ny):
             for k in range(Nz):
+                
+                if obstacle[i, j, k]:
+                    continue
                 
                 # Calculate rho and u
                 local_rho = 0.0
@@ -309,15 +314,12 @@ def collide_forced_initial(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz,
                                            cu, cx, cy, cz, w[q], inv_cs2, inv_cs4)
                     
                     ## Perform forced BGK collisions
-                    
                     pops_post[i, j, k, q] = pops_pre[i, j, k, q]*omega_prime + f_eq*omega + F_i*omega_S_coeff # plus optional fluctuating stress term
-                    
-
 
 #%% BGK Forced Collision
 @nb.jit(nopython=True, parallel=True, fastmath=True)
 def collide_forced_fluctuation(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, 
-                   inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega_S_coeff, N_vels, w, c, nu, kB_T):
+                   inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega_S_coeff, N_vels, w, c, nu, kB_T, obstacle):
     """
     Calculates and saves the velocity and density fields from the current 
     populations and performs the BGK collision globally with Guo forcing.
@@ -437,6 +439,9 @@ def collide_forced_fluctuation(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, N
         i = np.int64(i)
         for j in range(Ny):
             for k in range(Nz):
+
+                if obstacle[i, j, k]:
+                    continue
                 
                 # Calcul de rho et u
                 local_rho = 0.0
@@ -514,205 +519,20 @@ def collide_forced_fluctuation(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, N
 
 
 #%% Streaming
-@nb.jit(nopython=True, parallel=True, fastmath=True)
-def stream_1D_flow(pops_pre, pops_post, rho, Nx, Ny, Nz, rho_0, Ux_t, Uy_0, Uz_0, 
-                   N_vels, c, inv_cy_indx, inv_cz_indx, alpha=0.99):
-    """
-    Streams particle populations, assuming a flow inlet at the x = 0 and outlet 
-    at x = Nx with inlet velocity u = [Ux_t, Uy_0, Uz_0], where Uy_0 = Uz_0 = 0.
-    Slip condition on all other boundaries.
-    Constant 1D velocity inlet with x velocity = Ux_t.
-    Zero-gradient density (pressure) outlet, with the density pinned to the
-    desired fluid density rho_0. alpha controls the strength at which the fluid
-    density is enforced to remain at rho_0.
+@nb.jit(nopython=True, inline='always', fastmath=True)
+def slip(indx, q_write, inv_ci_indx):
+    return indx, inv_ci_indx[q_write]
 
-    Parameters
-    ----------
-    pops_pre : ndarray
-        pre-collision populations. ndims=4, dtype=float
-    pops_post : ndarray
-        post-collision populations. ndims=4, dtype=float
-    rho : ndarray
-        fluid density field. ndims=3, dtype=float
-    Nx : int
-        number of fluid cells in the x direction.
-    Ny : int
-        number of fluid cells in the y direction.
-    Nz : int
-        number of fluid cells in the z direction.
-    rho_0 : float
-        reference fluid density.
-    Ux_t : float
-        current fluid inlet x velocity.
-    Uy_0 : float
-       fluid inlet y velocity (0).
-    Uz_0 : float
-        fluid inlet z velocity (0).
-    N_vels : int
-        number of discrete velocities (i.e. "lattice vectors").
-    c : ndarray
-        discrete velocity set. ndtims=2, dtype=int
-    inv_cy_indx : ndarray
-        indexing array for specular reflection in the y direction. ndims=1, dtype=float
-    inv_cz_indx : ndarray
-        indexing array for specular reflection in the z direction. ndims=1, dtype=float
-    alpha : float, optional
-        reference density anchoring weighting factor. The default is 0.99.
+@nb.jit(nopython=True, inline='always', fastmath=True)
+def noslip(indx, q, inv_c_indx):
+    return indx, inv_c_indx[q]
 
-    Returns
-    -------
-    None.
-    """
-    
-    # Bulk Streaming - Internal Nodes
-    for i in nb.prange(1, Nx-1):
-        i = np.int64(i)
-        for j in range(1, Ny-1):
-            for k in range(1, Nz-1):
-                for q in range(N_vels):
-                    pull_i = i - c[q, 0]
-                    pull_j = j - c[q, 1]
-                    pull_k = k - c[q, 2]
-                    pops_pre[i, j, k, q] = pops_post[pull_i, pull_j, pull_k, q]
-    
-    # X Bounds
-    for i in [0, Nx-1]:
-        i = np.int64(i)
-        for j in nb.prange(Ny):
-            j = np.int64(j)
-            for k in range(Nz):
-                for q in range(N_vels):
-                    pull_i = i - c[q, 0]
-                    pull_j = j - c[q, 1]
-                    pull_k = k - c[q, 2]
-                    q_write = q
-                    ## Slip condition on y-walls (top/bottom)
-                    if pull_j < 0 or pull_j >= Ny:
-                        pull_j = j
-                        q_write = inv_cy_indx[q]
-                    ## Slip condition on z-walls (front/back)
-                    if pull_k < 0 or pull_k >= Nz:
-                        pull_k = k
-                        q_write = inv_cz_indx[q]
-                    ## Skip particles pulled from outside the x domain
-                    if pull_i < 0 or pull_i >= Nx:
-                        continue
-                    pops_pre[i, j, k, q] = pops_post[pull_i, pull_j, pull_k, q_write]
-    
-    # Y Bounds
-    for j in [0, Ny-1]:
-        j = np.int64(j)
-        for i in nb.prange(1, Nx-1):
-            i = np.int64(i)
-            for k in range(Nz):
-                for q in range(N_vels):
-                    pull_i = i - c[q, 0]
-                    pull_j = j - c[q, 1]
-                    pull_k = k - c[q, 2]
-                    q_write = q
-                    ## Slip condition on y-walls (top/bottom)
-                    if pull_j < 0 or pull_j >= Ny:
-                        pull_j = j
-                        q_write = inv_cy_indx[q]
-                    ## Slip condition on z-walls (front/back)
-                    if pull_k < 0 or pull_k >= Nz:
-                        pull_k = k
-                        q_write = inv_cz_indx[q]
-                    pops_pre[i, j, k, q] = pops_post[pull_i, pull_j, pull_k, q_write]
-    
-    # Z Bounds
-    for k in [0, Nz-1]:
-        k = np.int64(k)
-        for i in nb.prange(1, Nx-1):
-            i = np.int64(i)
-            for j in range(1, Ny-1):
-                for q in range(N_vels):
-                    pull_i = i - c[q, 0]
-                    pull_j = j - c[q, 1]
-                    pull_k = k - c[q, 2]
-                    q_write = q
-                    ## Slip condition on z-walls (front/back)
-                    if pull_k < 0 or pull_k >= Nz:
-                        pull_k = k
-                        q_write = inv_cz_indx[q]
-                    pops_pre[i, j, k, q] = pops_post[pull_i, pull_j, pull_k, q_write]
-    
-    
-    
-    # Inlet - Zou-He Constant Velocity
-    for j in nb.prange(Ny):
-        j = np.int64(j)
-        for k in range(Nz):
-            pop0 = pops_pre[0, j, k, 0]
-            pop2 = pops_pre[0, j, k, 2]
-            pop3 = pops_pre[0, j, k, 3]
-            pop4 = pops_pre[0, j, k, 4]
-            pop5 = pops_pre[0, j, k, 5]
-            pop6 = pops_pre[0, j, k, 6]
-            pop8 = pops_pre[0, j, k, 8]
-            pop10 = pops_pre[0, j, k, 10]
-            pop11 = pops_pre[0, j, k, 11]
-            pop12 = pops_pre[0, j, k, 12]
-            pop14 = pops_pre[0, j, k, 14]
-            pop16 = pops_pre[0, j, k, 16]
-            pop17 = pops_pre[0, j, k, 17]
-            pop18 = pops_pre[0, j, k, 18]
-            
-            local_rho = pop10 + pop16 + pop8 + pop14 + pop2
-            local_rho = pop12 + pop17 + pop18 + pop11 + pop6 + pop5 + pop4 + pop3 + pop0 + local_rho*2.0
-            local_rho_ux= Ux_t*local_rho/(1.0 - Ux_t)
-            local_rho_ux_div6 = local_rho_ux/6.0
-            
-            Nxy = (-pop12 - pop18 - pop4 + pop17 + pop11 + pop3)/2.0
-            Nxz = (-pop12 - pop17 - pop6 + pop18 + pop11 + pop5)/2.0
-            
-            pops_pre[0, j, k, 1] = pop2 + local_rho_ux/3.0
-            pops_pre[0, j, k, 13] = pop14 + local_rho_ux_div6 + Nxy
-            pops_pre[0, j, k, 7] = pop8 + local_rho_ux_div6 - Nxy
-            pops_pre[0, j, k, 9] = pop10 + local_rho_ux_div6 - Nxz
-            pops_pre[0, j, k, 15] = pop16 + local_rho_ux_div6 + Nxz
-    
-    
-    # Outlet - Zou-He Constant Pressure (Density)
-    alpha_prime = 1 - alpha
-    for j in nb.prange(Ny):
-        j = np.int64(j)
-        for k in range(Nz):
-            pop0 = pops_pre[-1, j, k, 0]
-            pop1 = pops_pre[-1, j, k, 1]
-            pop3 = pops_pre[-1, j, k, 3]
-            pop4 = pops_pre[-1, j, k, 4]
-            pop5 = pops_pre[-1, j, k, 5]
-            pop6 = pops_pre[-1, j, k, 6]
-            pop7 = pops_pre[-1, j, k, 7]
-            pop9 = pops_pre[-1, j, k, 9]
-            pop11 = pops_pre[-1, j, k, 11]
-            pop12 = pops_pre[-1, j, k, 12]
-            pop13 = pops_pre[-1, j, k, 13]
-            pop15 = pops_pre[-1, j, k, 15]
-            pop17 = pops_pre[-1, j, k, 17]
-            pop18 = pops_pre[-1, j, k, 18]
-            
-            local_ux = pop15 + pop9 + pop13 + pop7 + pop1
-            local_ux = pop12 + pop17 + pop18 + pop11 + pop6 + pop5 + pop4 + pop3 + pop0 + local_ux*2.0
-            
-            local_rho = alpha*rho[-2, j, k] + alpha_prime*rho_0
-            
-            local_ux_rho =  local_ux - local_rho
-            local_ux_rho_div6 = local_ux_rho/6.0
-            
-            Nxy = (-pop12 - pop18 - pop4 + pop17 + pop11 + pop3)/2.0
-            Nxz = (-pop12 - pop17 - pop6 + pop18 + pop11 + pop5)/2.0
-            
-            pops_pre[-1, j, k, 2] = pop1 - local_ux_rho/3.0
-            pops_pre[-1, j, k, 14] = pop13 - local_ux_rho_div6 - Nxy
-            pops_pre[-1, j, k, 8] = pop7 - local_ux_rho_div6 + Nxy
-            pops_pre[-1, j, k, 10] = pop9 - local_ux_rho_div6 + Nxz
-            pops_pre[-1, j, k, 16] = pop15 - local_ux_rho_div6 - Nxz
-
+@nb.jit(nopython=True, inline='always', fastmath=True)
+def periodic(pull_indx, q_write, Ni):
+    return pull_indx%Ni, q_write
 
 @nb.jit(nopython=True, parallel=True, fastmath=True)
-def stream_closed(pops_pre, pops_post, Nx, Ny, Nz, N_vels, c, inv_cx_indx, inv_cy_indx, inv_cz_indx):
+def stream_closed(pops_pre, pops_post, obstacle, Nx, Ny, Nz, N_vels, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, inv_c_indx, BCs):
     """
     Streams particle populations, assuming all domain boundaries are slip walls.
     There are no external conditions which anchor fluid properties
@@ -726,6 +546,8 @@ def stream_closed(pops_pre, pops_post, Nx, Ny, Nz, N_vels, c, inv_cx_indx, inv_c
         pre-collision populations. ndims=4, dtype=float
     pops_post : ndarray
         post-collision populations. ndims=4, dtype=float
+    obstacle : ndarray
+        obstacle mask. ndims=3, dtype=bool
     Nx : int
         number of fluid cells in the x direction.
     Ny : int
@@ -737,16 +559,24 @@ def stream_closed(pops_pre, pops_post, Nx, Ny, Nz, N_vels, c, inv_cx_indx, inv_c
     c : ndarray
         discrete velocity set. ndtims=2, dtype=int
     inv_cx_indx : ndarray
-        indexing array for specular reflection in the x direction. ndims=1, dtype=float
+        indexing array for specular reflection in the x direction. ndims=1, 
+        dtype=float
     inv_cy_indx : ndarray
-        indexing array for specular reflection in the y direction. ndims=1, dtype=float
+        indexing array for specular reflection in the y direction. ndims=1, 
+        dtype=float
     inv_cz_indx : ndarray
-        indexing array for specular reflection in the z direction. ndims=1, dtype=float
+        indexing array for specular reflection in the z direction. ndims=1, 
+        dtype=float
+    BCs : ndarray
+        domain boundary conditions. BCs[i, :] = boundaries on axis i, 
+        BCs[:, 0] = lower boundary, BCs[:, 1] = upper boundary. 0 = periodic, 
+        1 = slip, 2 = no-slip. ndims=2, dtype=uint8
 
     Returns
     -------
     None.
     """
+    
     
     # Bulk Streaming - Internal Nodes
     for i in nb.prange(1, Nx-1):
@@ -757,7 +587,17 @@ def stream_closed(pops_pre, pops_post, Nx, Ny, Nz, N_vels, c, inv_cx_indx, inv_c
                     pull_i = i - c[q, 0]
                     pull_j = j - c[q, 1]
                     pull_k = k - c[q, 2]
-                    pops_pre[i, j, k, q] = pops_post[pull_i, pull_j, pull_k, q]
+                    q_write = q
+                    
+                    # Obstacle bounce-back
+                    if obstacle[pull_i, pull_j, pull_k]:
+                        pull_i = i
+                        pull_j = j
+                        pull_k = k
+                        q_write = inv_c_indx[q]
+                    
+                    pops_pre[i, j, k, q] = pops_post[pull_i, pull_j, pull_k, q_write]
+    
     
     # X Bounds
     for i in [0, Nx-1]:
@@ -770,19 +610,64 @@ def stream_closed(pops_pre, pops_post, Nx, Ny, Nz, N_vels, c, inv_cx_indx, inv_c
                     pull_j = j - c[q, 1]
                     pull_k = k - c[q, 2]
                     q_write = q
-                    ## Slip condition on x-walls (left/right)
-                    if pull_i < 0 or pull_i >= Nx:
+                    
+                    ## Boundary condition on x-walls (left/right)
+                    if pull_i < 0:
+                        if BCs[0, 0] == 0:
+                            pull_i, q_write = periodic(pull_i, q_write, Nx)
+                        elif BCs[0, 0] == 1:
+                            pull_i, q_write = slip(i, q_write, inv_cx_indx)
+                        elif BCs[0, 0] == 2:
+                            pull_i, q_write = noslip(i, q, inv_c_indx)
+                    elif pull_i >= Nx:
+                        if BCs[0, 1] == 0:
+                            pull_i, q_write = periodic(pull_i, q_write, Nx)
+                        elif BCs[0, 1] == 1:
+                            pull_i, q_write = slip(i, q_write, inv_cx_indx)
+                        elif BCs[0, 1] == 2:
+                            pull_i, q_write = noslip(i, q, inv_c_indx)
+                    
+                    ## Boundary condition on y-walls (top/bottom)
+                    if pull_j < 0:
+                        if BCs[1, 0] == 0:
+                            pull_j, q_write = periodic(pull_j, q_write, Ny)
+                        elif BCs[1, 0] == 1:
+                            pull_j, q_write = slip(j, q_write, inv_cy_indx)
+                        elif BCs[1, 0] == 2:
+                            pull_j, q_write = noslip(j, q, inv_c_indx)
+                    elif pull_j >= Ny:
+                        if BCs[1, 1] == 0:
+                            pull_j, q_write = periodic(pull_j, q_write, Ny)
+                        elif BCs[1, 1] == 1:
+                            pull_j, q_write = slip(j, q_write, inv_cy_indx)
+                        elif BCs[1, 1] == 2:
+                            pull_j, q_write = noslip(j, q, inv_c_indx)
+                    
+                    ## Boundary condition on z-walls (front/back)
+                    if pull_k < 0:
+                        if BCs[2, 0] == 0:
+                            pull_k, q_write = periodic(pull_k, q_write, Nz)
+                        elif BCs[2, 0] == 1:
+                            pull_k, q_write = slip(k, q_write, inv_cz_indx)
+                        elif BCs[2, 0] == 2:
+                            pull_k, q_write = noslip(k, q, inv_c_indx)
+                    elif pull_k >= Nz:
+                        if BCs[2, 1] == 0:
+                            pull_k, q_write = periodic(pull_k, q_write, Nz)
+                        elif BCs[2, 1] == 1:
+                            pull_k, q_write = slip(k, q_write, inv_cz_indx)
+                        elif BCs[2, 1] == 2:
+                            pull_k, q_write = noslip(k, q, inv_c_indx)
+                    
+                    # Obstacle bounce-back
+                    if obstacle[pull_i, pull_j, pull_k]:
                         pull_i = i
-                        q_write = inv_cx_indx[q]
-                    ## Slip condition on y-walls (top/bottom)
-                    if pull_j < 0 or pull_j >= Ny:
                         pull_j = j
-                        q_write = inv_cy_indx[q]
-                    ## Slip condition on z-walls (front/back)
-                    if pull_k < 0 or pull_k >= Nz:
                         pull_k = k
-                        q_write = inv_cz_indx[q]
+                        q_write = inv_c_indx[q]
+                    
                     pops_pre[i, j, k, q] = pops_post[pull_i, pull_j, pull_k, q_write]
+    
     
     # Y Bounds
     for j in [0, Ny-1]:
@@ -795,15 +680,48 @@ def stream_closed(pops_pre, pops_post, Nx, Ny, Nz, N_vels, c, inv_cx_indx, inv_c
                     pull_j = j - c[q, 1]
                     pull_k = k - c[q, 2]
                     q_write = q
-                    ## Slip condition on y-walls (top/bottom)
-                    if pull_j < 0 or pull_j >= Ny:
+                    
+                    ## Boundary condition on y-walls (top/bottom)
+                    if pull_j < 0:
+                        if BCs[1, 0] == 0:
+                            pull_j, q_write = periodic(pull_j, q_write, Ny)
+                        elif BCs[1, 0] == 1:
+                            pull_j, q_write = slip(j, q_write, inv_cy_indx)
+                        elif BCs[1, 0] == 2:
+                            pull_j, q_write = noslip(j, q, inv_c_indx)
+                    elif pull_j >= Ny:
+                        if BCs[1, 1] == 0:
+                            pull_j, q_write = periodic(pull_j, q_write, Ny)
+                        elif BCs[1, 1] == 1:
+                            pull_j, q_write = slip(j, q_write, inv_cy_indx)
+                        elif BCs[1, 1] == 2:
+                            pull_j, q_write = noslip(j, q, inv_c_indx)
+                    
+                    ## Boundary condition on z-walls (front/back)
+                    if pull_k < 0:
+                        if BCs[2, 0] == 0:
+                            pull_k, q_write = periodic(pull_k, q_write, Nz)
+                        elif BCs[2, 0] == 1:
+                            pull_k, q_write = slip(k, q_write, inv_cz_indx)
+                        elif BCs[2, 0] == 2:
+                            pull_k, q_write = noslip(k, q, inv_c_indx)
+                    elif pull_k >= Nz:
+                        if BCs[2, 1] == 0:
+                            pull_k, q_write = periodic(pull_k, q_write, Nz)
+                        elif BCs[2, 1] == 1:
+                            pull_k, q_write = slip(k, q_write, inv_cz_indx)
+                        elif BCs[2, 1] == 2:
+                            pull_k, q_write = noslip(k, q, inv_c_indx)
+                    
+                    # Obstacle bounce-back
+                    if obstacle[pull_i, pull_j, pull_k]:
+                        pull_i = i
                         pull_j = j
-                        q_write = inv_cy_indx[q]
-                    ## Slip condition on z-walls (front/back)
-                    if pull_k < 0 or pull_k >= Nz:
                         pull_k = k
-                        q_write = inv_cz_indx[q]
+                        q_write = inv_c_indx[q]
+                    
                     pops_pre[i, j, k, q] = pops_post[pull_i, pull_j, pull_k, q_write]
+    
     
     # Z Bounds
     for k in [0, Nz-1]:
@@ -816,10 +734,30 @@ def stream_closed(pops_pre, pops_post, Nx, Ny, Nz, N_vels, c, inv_cx_indx, inv_c
                     pull_j = j - c[q, 1]
                     pull_k = k - c[q, 2]
                     q_write = q
-                    ## Slip condition on z-walls (front/back)
-                    if pull_k < 0 or pull_k >= Nz:
+                    
+                    ## Boundary condition on z-walls (front/back)
+                    if pull_k < 0:
+                        if BCs[2, 0] == 0:
+                            pull_k, q_write = periodic(pull_k, q_write, Nz)
+                        elif BCs[2, 0] == 1:
+                            pull_k, q_write = slip(k, q_write, inv_cz_indx)
+                        elif BCs[2, 0] == 2:
+                            pull_k, q_write = noslip(k, q, inv_c_indx)
+                    elif pull_k >= Nz:
+                        if BCs[2, 1] == 0:
+                            pull_k, q_write = periodic(pull_k, q_write, Nz)
+                        elif BCs[2, 1] == 1:
+                            pull_k, q_write = slip(k, q_write, inv_cz_indx)
+                        elif BCs[2, 1] == 2:
+                            pull_k, q_write = noslip(k, q, inv_c_indx)
+                    
+                    # Obstacle bounce-back
+                    if obstacle[pull_i, pull_j, pull_k]:
+                        pull_i = i
+                        pull_j = j
                         pull_k = k
-                        q_write = inv_cz_indx[q]
+                        q_write = inv_c_indx[q]
+                    
                     pops_pre[i, j, k, q] = pops_post[pull_i, pull_j, pull_k, q_write]
 
 
@@ -890,84 +828,10 @@ def initialise_pops(pops, F, u, u_mag2, Nx, Ny, Nz, rho_0, inv_cs2, inv_2cs2, in
 
 
 #%% Complete LBM Update Functions
-def update_LBM_pops_1D_flow(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, rho_0, Ux_t, Uy_0, Uz_0, 
-                            inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, 
-                            N_vels, w, c, inv_cy_indx, inv_cz_indx):
-    """
-    Updates the paricle populations for one time step using the quasi-
-    compressible LB equaiton with BGK collisions and Guo forcing. First collides
-    the particles, then streams the populations. 1D inlet flow.
-
-    Parameters
-    ----------
-    pops_pre : ndarray
-        pre-collision populations. ndims=4, dtype=float
-    pops_post : ndarray
-        post-collision populations. ndims=4, dtype=float
-    F : ndarray
-        fluid force density field. ndims=4, dtype=float
-    rho : ndarray
-        fluid density field. ndims=3, dtype=float
-    u : ndarray
-        fluid velocity field. ndims=4, dtype=float
-    u_mag2 : ndarray
-        fluid velocity squared magnitude field. ndims=3, dtype=float
-    Nx : int
-        number of fluid cells in the x direction.
-    Ny : int
-        number of fluid cells in the y direction.
-    Nz : int
-        number of fluid cells in the z direction.
-    rho_0 : float
-        reference fluid density.
-    Ux_t : float
-        current fluid inlet x velocity.
-    Uy_0 : float
-       fluid inlet y velocity (0).
-    Uz_0 : float
-        fluid inlet z velocity (0).
-    inv_cs2 : float
-        inverse squared sonic velocity.
-    inv_2cs2 : float
-        half inverse squared sonic velocity.
-    inv_cs4 : float
-        inverse sonic velocity fourth power.
-    inv_2cs4 : float
-        half inverse sonic velocity fourth power.
-    omega : float
-        inverse relaxation factor.
-    omega_prime : float
-        "conjugate" inverse relaxation factor (1 - omega).
-    omega_S_coeff : float
-        "conjugate" half inverse relaxation factor.
-    N_vels : int
-        number of discrete velocities (i.e. "lattice vectors").
-    w : ndarray
-        discrete velocity weightings. ndims=1, dtype=float
-    c : ndarray
-        discrete velocity set. ndtims=2, dtype=int
-    inv_cy_indx : ndarray
-        indexing array for specular reflection in the y direction. ndims=1, dtype=float
-    inv_cz_indx : ndarray
-        indexing array for specular reflection in the z direction. ndims=1, dtype=float
-
-    Returns
-    -------
-    None.
-    """
-    
-    # Calculate fluid properties and perform collisions
-    collide_forced_fluctuation(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, 
-                   inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c)
-    
-    # Stream populations
-    stream_1D_flow(pops_pre, pops_post, rho, Nx, Ny, Nz, rho_0, Ux_t, Uy_0, Uz_0, 
-                   N_vels, c, inv_cy_indx, inv_cz_indx)
-
-
-def update_LBM_pops_closed(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, 
+def update_LBM_pops_closed(pops_pre, pops_post, F, rho, u, u_mag2, obstacle, Nx, Ny, Nz, 
                            inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, 
-                           N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, nu, kB_T, collide_forced):
+                           N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, inv_c_indx, BCs, nu, kB_T, collide_forced):
+
     """
     Updates the paricle populations for one time step using the quasi-
     compressible LB equaiton with BGK collisions and Guo forcing. First collides
@@ -987,6 +851,8 @@ def update_LBM_pops_closed(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz,
         fluid velocity field. ndims=4, dtype=float
     u_mag2 : ndarray
         fluid velocity squared magnitude field. ndims=3, dtype=float
+    obstacle : ndarray
+        obstacle mask. ndims=3, dtype=bool
     Nx : int
         number of fluid cells in the x direction.
     Ny : int
@@ -1019,19 +885,25 @@ def update_LBM_pops_closed(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz,
         indexing array for specular reflection in the y direction. ndims=1, dtype=float
     inv_cz_indx : ndarray
         indexing array for specular reflection in the z direction. ndims=1, dtype=float
+    BCs : ndarray
+        domain boundary conditions. BCs[i, :] = boundaries on axis i, 
+        BCs[:, 0] = lower boundary, BCs[:, 1] = upper boundary. 0 = periodic, 
+        1 = slip, 2 = no-slip. ndims=2, dtype=uint8
 
     Returns
     -------
     None.
     """
     
-    # Calculate fluid properties and perform collisions
+# Calculate fluid properties and perform collisions
     if collide_forced == "fluctuation":
         collide_forced_fluctuation(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega_S_coeff, N_vels, w, c, nu, kB_T)
     elif collide_forced == "initial":
         collide_forced_initial(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c)
     
-    #collide_forced2(pops_pre, pops_post, F, rho, u, u_mag2, Nx, Ny, Nz, inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c)
     # Stream populations
-    stream_closed(pops_pre, pops_post, Nx, Ny, Nz, 
-                  N_vels, c, inv_cx_indx, inv_cy_indx, inv_cz_indx)
+    stream_closed(pops_pre, pops_post, obstacle, Nx, Ny, Nz, N_vels, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, inv_c_indx, BCs)
+
+
+
+
