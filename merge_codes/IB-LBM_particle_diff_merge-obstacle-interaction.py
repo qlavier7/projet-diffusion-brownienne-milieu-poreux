@@ -62,12 +62,13 @@ import matplotlib.pyplot as plt
 import imageio
 from matplotlib.patches import Polygon
 import matplotlib.cm as cm
+from fractions import Fraction
 
 from obs_forced_LBGK_lib import get_LBM_consts, initialise_pops, update_LBM_pops_closed#, update_LBM_pops_closed_combined
 from multi_marker_IBM_lib_v2 import gaus_consts, gaus_dist, dual_gaus_consts, dual_gaus_dist, plot_gaus_dist, IB_force_density, interpolate_marker_vels
 
 max_mem_avail = 12.0e9 # maximum available memory [bytes]
-output_name = 'particle_diffusion_merge_codes_v1' # name of the output file name
+output_name = 'particle_diffusion_merge_codes' # name of the output file name
 
 #%% Problem Input Parameters
 
@@ -98,7 +99,8 @@ wall_y = -0.5
 D_particle1 = 7 # number of lattice points across the particle diameter
 D_particle2 = 10
 D_particle3 = 4
-D_particles = np.array([D_particle1, D_particle2, D_particle3]) # list of particle diameters
+D_particle4 = 4
+D_particles = np.array([D_particle1, D_particle2, D_particle3, D_particle4]) # list of particle diameters
 r_particles = np.array([D/2 for D in D_particles]) # list of particle radii
 spacing_mutl = 10 # control the spacing between the particle and the domain walls
 
@@ -110,7 +112,7 @@ n_lattice = Nx*Ny*Nz # total n.o. fluid nodes
 cx_particle = (Nx-1)/2 # particle initial x position
 cy_particle = (Ny-1)/2 # particle initial y position
 cz_particle = (Nz-1)/2 # particle initial z position
-N_markers = 3 # number of particle markers - need to offset initial positions for anything to happen when increasing this from 1
+N_markers = 4 # number of particle markers - need to offset initial positions for anything to happen when increasing this from 1
 
 stop_dist = D_particle1/2.0 # minimum distance from the particle to the wall before the simulation is stopped
 stopping_lims = [[stop_dist, Nx-1-stop_dist], [stop_dist, Ny-1-stop_dist], [stop_dist, Nz-1-stop_dist]]
@@ -122,7 +124,7 @@ f_dist_width = 2 # width of the surface gaussian force distribution function [la
 
 
 # Fluid
-nu = 1/6 # kinematic viscosity [m2 s-1]
+nu = 1/50 # kinematic viscosity [m2 s-1]
 rho_0 = 1.0 # initial density [kg m-3]
 mu = rho_0*nu # dynamic viscosity [kg m-1 s-1]
 
@@ -138,12 +140,16 @@ brownian_method = ['none', 'force', 'fluctuation'][0] # which method to use for 
 lubrication_threshold = 2/3
 
 # Cylinder (fiber) properties
-N_cylinders = 1
-cyl_pos = np.array([[35.0, 35.0, 35.0]])   # Centers (X, Y, Z)
-cyl_axis = np.array([[1.0, 1.0, 0.0]])      # Orientations (X, Y, Z)
+N_cylinders = 3
+cyl_pos = np.array([[25.0, 35.0, 35.0],
+                    [35.0, 28.0, 35.0],
+                    [50.0, 45.0, 25.0]])   # Centers (X, Y, Z)
+cyl_axis = np.array([[0.0, 1.0, 0.0],
+                    [1.0, 0.2, 0.0],
+                    [0.0, 1.0, 1.0]])      # Orientations (X, Y, Z)
 cyl_axis = cyl_axis / np.linalg.norm(cyl_axis, axis=1)[:, np.newaxis]  # Normalize each axis vector
-cyl_radius = np.array([3.0])          # Radius of the cylinders
-cyl_height = np.array([40.0])         # Height of the cylinders
+cyl_radius = np.array([3.0, 2.5, 2.8])          # Radius of the cylinders
+cyl_height = np.array([55.0, 55.0, 50.0])         # Height of the cylinders
 
 #%% Define Obstacle Geometry
 @nb.jit(nopython=True, parallel=True, fastmath=True)
@@ -744,19 +750,24 @@ r_cutoff_inner_sq = r_cutoff_inner ** 2
 init_marker_pos = np.empty((N_markers, 3), dtype=np.float64) # initial marker positions
 
 # marker 1
-init_marker_pos[0, 0] = cx_particle - 2.5*D_particle1
+init_marker_pos[0, 0] = cx_particle - 3 * D_particle1
 init_marker_pos[0, 1] = cy_particle
 init_marker_pos[0, 2] = cz_particle
 
 # marker 2
-init_marker_pos[1, 0] = cx_particle + 2*D_particle2
-init_marker_pos[1, 1] = cy_particle
+init_marker_pos[1, 0] = cx_particle + 2 * D_particle2
+init_marker_pos[1, 1] = cy_particle + 0.5 * D_particle2
 init_marker_pos[1, 2] = cz_particle
 
 # marker 3
 init_marker_pos[2, 0] = cx_particle 
-init_marker_pos[2, 1] = cy_particle - 2.5*D_particle1
+init_marker_pos[2, 1] = cy_particle - 4 * D_particle3
 init_marker_pos[2, 2] = cz_particle
+
+# marker 4
+init_marker_pos[3, 0] = cx_particle + 3 * D_particle4
+init_marker_pos[3, 1] = cy_particle - 3.5 * D_particle4
+init_marker_pos[3, 2] = cz_particle
 
 marker_pos = np.empty_like(init_marker_pos) # Lagrangian boundary marker positions
 marker_vel = np.empty_like(marker_pos) # Lagrangian boundary marker velocities
@@ -876,9 +887,10 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
     for t in iterations:
         # Initial force distribution for the first 100 steps
         if t < 100:
-            marker_f[0, 0] = 2 # initial force marker 1
-            marker_f[1, 1] = -2 # initial force marker 2
-            marker_f[2, 1] = 2 # initial force marker 3
+            marker_f[0, 0] = 1 # initial force marker 1
+            marker_f[1, 1] = 2 # initial force marker 2
+            marker_f[2, 0] = 0.3 # initial force marker 3
+            marker_f[2, 1] = 0.3
         
         # Remove force after 100 steps
         if t>=100:
@@ -1046,7 +1058,9 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
             
             ax.set_xlim([0, Nx-1])
             ax.set_ylim([0, Ny-1])
-            ax.set_title(f'3D Particle Diffusion - {IB_kernel} IBM\nZ Position = {z_slice}, t = {t}')
+            f_nu = Fraction(nu).limit_denominator()
+            ax.set_title(f"3D Particle Diffusion - {IB_kernel} IBM\n"
+             fr"Z Position = {z_slice}, t = {t}, $\nu = {f_nu.numerator}/{f_nu.denominator}$")
             ax.set_xlabel('X Position')
             ax.set_ylabel('Y Position')
             plt.tight_layout()
