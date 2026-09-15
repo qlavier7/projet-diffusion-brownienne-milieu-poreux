@@ -67,8 +67,7 @@ from obs_forced_LBGK_lib import get_LBM_consts, initialise_pops, update_LBM_pops
 from multi_marker_IBM_lib_v2 import gaus_consts, gaus_dist, dual_gaus_consts, dual_gaus_dist, plot_gaus_dist, IB_force_density, interpolate_marker_vels
 
 max_mem_avail = 12.0e9 # maximum available memory [bytes]
-
-
+output_name = 'particle_diffusion_merge_codes_v1' # name of the output file name
 
 #%% Problem Input Parameters
 
@@ -80,7 +79,7 @@ show_mass = False # plot the total fluid mass over the simulation duration - can
 
 
 # Simulation Duration
-sim_time = 1000 # simulation time [s] - adjust accordingly
+sim_time = 500 # simulation time [s] - adjust accordingly
 
 
 # Fluid Domain Boundary Conditions
@@ -132,7 +131,7 @@ rhos = np.ones(N_markers, dtype=np.float64) * 1.14 * rho_0 # list of particle de
 
 # Diffusion
 kB_T = 0.005
-gammas = 6*np.pi*mu*r_particles # drag coefficient
+gammas = 6 * np.pi * mu * r_particles # drag coefficient
 brownian_method = ['none', 'force', 'fluctuation'][0] # which method to use for the brownian motion of the particle - 'none' = no forcing, 'force' = Langevin approach, 'fluctuation' = fluctuating hydrodynamics approach
 
 # Lubrication force properties
@@ -154,6 +153,7 @@ def initialise_obstacle(obstacle, Nx, Ny, Nz, cyl_pos, cyl_axis, cyl_radius, cyl
     """
     obstacle.fill(False)
     
+    # Place all cylinders in the domain
     for c in range(N_cylinders):
         pos = cyl_pos[c]
         axis = cyl_axis[c] / np.linalg.norm(cyl_axis[c])
@@ -236,18 +236,17 @@ def brownian_forcing(N_markers, marker_f):
     
     Large marker forces can cause instabilities.
     """
-    # print(marker_vel, np.size(marker_vel))
-
+    
     for m in nb.prange(N_markers):
         np.int64(m)
-        marker_f[m, 0] = np.random.normal(0, 1)*(2*gammas[m]*kB_T)**(1/2) # dt = 1
-        marker_f[m, 1] = np.random.normal(0, 1)*(2*gammas[m]*kB_T)**(1/2) # dt = 1
-        marker_f[m, 2] = np.random.normal(0, 1)*(2*gammas[m]*kB_T)**(1/2) # dt = 1
+        marker_f[m, 0] = np.random.normal(0, 1) * (2 * gammas[m] * kB_T)**(1/2) # dt = 1
+        marker_f[m, 1] = np.random.normal(0, 1) * (2 * gammas[m] * kB_T)**(1/2) # dt = 1
+        marker_f[m, 2] = np.random.normal(0, 1) * (2 * gammas[m] * kB_T)**(1/2) # dt = 1
 
 # Collisions handling
 @nb.jit(nopython=True, fastmath=True)
-def resolve_all_collisions(N_markers, marker_pos,marker_vel,  marker_f, D_particles, rhos, 
-                            N_cylinders, cyl_pos, cyl_axis, cyl_radius, cyl_height):
+def resolve_all_collisions(N_markers, marker_pos,marker_vel,  marker_f, D_particles, rhos, nu, 
+                            N_cylinders, cyl_pos, cyl_axis, cyl_radius, cyl_height, dt=1.0):
     """
     Unified 3D collision handling via addition of normal force vector (marker_f):
       - Case 1: Particle-particle collision
@@ -267,11 +266,11 @@ def resolve_all_collisions(N_markers, marker_pos,marker_vel,  marker_f, D_partic
             if collided[j]:
                 continue
             
-            # Mass and radius of the particle
-            mi = (4.0 / 3.0) * np.pi * (D_particles[i] / 2.0)**3 * rhos[i]
-            mj = (4.0 / 3.0) * np.pi * (D_particles[j] / 2.0)**3 * rhos[j]
+            # Radius and mass of the particle
             Ri = D_particles[i] / 2.0
             Rj = D_particles[j] / 2.0
+            mi = (4.0 / 3.0) * np.pi * rhos[i] * Ri**3
+            mj = (4.0 / 3.0) * np.pi * rhos[j] * Rj**3
             
             # Vector from marker pos and vel j to marker i
             rx = marker_pos[i, 0] - marker_pos[j, 0]
@@ -283,23 +282,24 @@ def resolve_all_collisions(N_markers, marker_pos,marker_vel,  marker_f, D_partic
             vz = marker_vel[i, 2] - marker_vel[j, 2]
             
             # Check for potential collision within the time step
-            dist_sq = rx**2 + ry**2 + rz**2
-            min_dist_sq = (Ri + Rj)**2
-            a = vx**2 + vy**2 + vz**2
+            dist_sq = rx * rx + ry * ry + rz * rz
+            min_dist_sq = (Ri + Rj)*(Ri + Rj)
+            
+            a = vx * vx + vy * vy + vz * vz
             b = 2.0 * (rx * vx + ry * vy + rz * vz)
             c = dist_sq - min_dist_sq
             
             if a > 0.0 and b < 0.0 and (b**2 - 4.0 * a * c) >= 0.0:
-                # Check existence and calculate the time of impact 0.0 < delta_t <= dt = 1.0 within time step
+                # Check existence and calculate the time of impact 0.0 < delta_t <= dt within time step
                 delta_t = (-b - np.sqrt(b**2 - 4.0 * a * c)) / (2.0 * a)
                 
-                if 0.0 < delta_t <= 1.0:
+                if 0.0 < delta_t <= dt:
                     # Calculate the position and distance at the time of impact with each other
                     rx_imp = rx + vx * delta_t
                     ry_imp = ry + vy * delta_t
                     rz_imp = rz + vz * delta_t
                     
-                    dist_imp = np.sqrt(rx_imp**2 + ry_imp**2 + rz_imp**2)
+                    dist_imp = np.sqrt(rx_imp*rx_imp + ry_imp*ry_imp + rz_imp*rz_imp)
                     
                     if dist_imp > 0.0:
                         # Calculate the normal vector and speed projection at the point of impact
@@ -312,7 +312,7 @@ def resolve_all_collisions(N_markers, marker_pos,marker_vel,  marker_f, D_partic
                         #If the scalar product is negative, the particles are moving towards each other and a collision occurs
                         if v_dot_n < 0.0:
                             # Effective mass for the collision
-                            m_eff = (mi * mj) / (mi + mj)
+                            m_eff = mi * mj / (mi + mj)
                             
                             # Calculate the velocity vector after collision
                             vxi_impact = marker_vel[i, 0] - 2.0 * (mj / (mi + mj)) * v_dot_n * nx
@@ -324,25 +324,25 @@ def resolve_all_collisions(N_markers, marker_pos,marker_vel,  marker_f, D_partic
                             vzj_impact = marker_vel[j, 2] + 2.0 * (mi / (mi + mj)) * v_dot_n * nz
                             
                             # Update the position of the particles within the time step, considering the impact
-                            marker_pos[i, 0] += marker_vel[i, 0] * delta_t + vxi_impact * (1.0 - delta_t)
-                            marker_pos[i, 1] += marker_vel[i, 1] * delta_t + vyi_impact * (1.0 - delta_t)
-                            marker_pos[i, 2] += marker_vel[i, 2] * delta_t + vzi_impact * (1.0 - delta_t)
+                            marker_pos[i, 0] += marker_vel[i, 0] * delta_t + vxi_impact * (dt - delta_t)
+                            marker_pos[i, 1] += marker_vel[i, 1] * delta_t + vyi_impact * (dt - delta_t)
+                            marker_pos[i, 2] += marker_vel[i, 2] * delta_t + vzi_impact * (dt - delta_t)
                             
-                            marker_pos[j, 0] += marker_vel[j, 0] * delta_t + vxj_impact * (1.0 - delta_t)
-                            marker_pos[j, 1] += marker_vel[j, 1] * delta_t + vyj_impact * (1.0 - delta_t)
-                            marker_pos[j, 2] += marker_vel[j, 2] * delta_t + vzj_impact * (1.0 - delta_t)
+                            marker_pos[j, 0] += marker_vel[j, 0] * delta_t + vxj_impact * (dt - delta_t)
+                            marker_pos[j, 1] += marker_vel[j, 1] * delta_t + vyj_impact * (dt - delta_t)
+                            marker_pos[j, 2] += marker_vel[j, 2] * delta_t + vzj_impact * (dt - delta_t)
 
                             # Update the force vectors to reflect the collision between the particles
-                            dti = 0.3 * D_particles[i] / D_particles[0]
-                            dtj = 0.3 * D_particles[j] / D_particles[0]
+                            time_force_i = 0.3 * D_particles[i] / D_particles[0]
+                            time_force_j = 0.3 * D_particles[j] / D_particles[0]
 
-                            marker_f[i, 0] -= 2.0 * m_eff * v_dot_n * nx / dti
-                            marker_f[i, 1] -= 2.0 * m_eff * v_dot_n * ny / dti
-                            marker_f[i, 2] -= 2.0 * m_eff * v_dot_n * nz / dti
+                            marker_f[i, 0] -= 2.0 * m_eff * v_dot_n * nx / time_force_i
+                            marker_f[i, 1] -= 2.0 * m_eff * v_dot_n * ny / time_force_i
+                            marker_f[i, 2] -= 2.0 * m_eff * v_dot_n * nz / time_force_i
                             
-                            marker_f[j, 0] += 2.0 * m_eff * v_dot_n * nx / dtj
-                            marker_f[j, 1] += 2.0 * m_eff * v_dot_n * ny / dtj
-                            marker_f[j, 2] += 2.0 * m_eff * v_dot_n * nz / dtj
+                            marker_f[j, 0] += 2.0 * m_eff * v_dot_n * nx / time_force_j
+                            marker_f[j, 1] += 2.0 * m_eff * v_dot_n * ny / time_force_j
+                            marker_f[j, 2] += 2.0 * m_eff * v_dot_n * nz / time_force_j
                             
                             collided[i] = True
                             collided[j] = True
@@ -353,9 +353,9 @@ def resolve_all_collisions(N_markers, marker_pos,marker_vel,  marker_f, D_partic
         if collided[i]:
             continue
         
-        # Mass and radius of the particle
-        mi = (4.0 / 3.0) * np.pi * (D_particles[i] / 2.0)**3 * rhos[i]
+        # Radius and mass of the particle
         Ri = D_particles[i] / 2.0
+        mi = (4.0 / 3.0) * np.pi * rhos[i] * Ri**3
         
         # Loop over all cylinders to check for potential collisions
         for c in range(N_cylinders):
@@ -387,7 +387,7 @@ def resolve_all_collisions(N_markers, marker_pos,marker_vel,  marker_f, D_partic
             perp_y = ry - h_proj * axis_c[1]
             perp_z = rz - h_proj * axis_c[2]
             
-            dist_perp_sq = perp_x**2 + perp_y**2 + perp_z**2
+            dist_perp_sq = perp_x*perp_x + perp_y*perp_y + perp_z*perp_z
             
             # Calculate the axial speed of the particle relative to the cylinder axis
             vh = vx * axis_c[0] + vy * axis_c[1] + vz * axis_c[2]
@@ -401,15 +401,15 @@ def resolve_all_collisions(N_markers, marker_pos,marker_vel,  marker_f, D_partic
                 target_h = (H_cyl / 2.0 + Ri) if h_proj > 0 else -(H_cyl / 2.0 + Ri)
                 
                 # Compute the time to reach the target height of the cylinder face
-                delta_t_cap = (target_h - h_proj) / vh
+                delta_t = (target_h - h_proj) / vh
 
-                # Check existence of the time of impact 0.0 < delta_t <= dt = 1.0 within time step
-                if 0.0 < delta_t_cap <= 1.0:
+                # Check existence of the time of impact 0.0 < delta_t <= dt within time step
+                if 0.0 < delta_t <= dt:
                     # Calculate the position and distance at the time of impact with the cylinder face
-                    perp_x_imp = perp_x + v_perp_x * delta_t_cap
-                    perp_y_imp = perp_y + v_perp_y * delta_t_cap
-                    perp_z_imp = perp_z + v_perp_z * delta_t_cap
-                    dist_perp_imp_sq = perp_x_imp**2 + perp_y_imp**2 + perp_z_imp**2
+                    perp_x_imp = perp_x + v_perp_x * delta_t
+                    perp_y_imp = perp_y + v_perp_y * delta_t
+                    perp_z_imp = perp_z + v_perp_z * delta_t
+                    dist_perp_imp_sq = perp_x_imp*perp_x_imp + perp_y_imp*perp_y_imp + perp_z_imp*perp_z_imp
 
                     # The impact must be within the radius of the cylinder face for a collision to occur
                     if dist_perp_imp_sq <= R_cyl**2:
@@ -429,31 +429,32 @@ def resolve_all_collisions(N_markers, marker_pos,marker_vel,  marker_f, D_partic
                             vz_impact = marker_vel[i, 2] - 2.0 * v_dot_n * nz
 
                             # Update the position of the particle within the time step, considering the impact
-                            marker_pos[i, 0] += vx * delta_t_cap + vx_impact * (1.0 - delta_t_cap)
-                            marker_pos[i, 1] += vy * delta_t_cap + vy_impact * (1.0 - delta_t_cap)
-                            marker_pos[i, 2] += vz * delta_t_cap + vz_impact * (1.0 - delta_t_cap)
+                            marker_pos[i, 0] += marker_vel[i, 0] * delta_t + vx_impact * (dt - delta_t)
+                            marker_pos[i, 1] += marker_vel[i, 1] * delta_t + vy_impact * (dt - delta_t)
+                            marker_pos[i, 2] += marker_vel[i, 2] * delta_t + vz_impact * (dt - delta_t)
 
                             # Update the force vector to reflect the collision with the cylinder surface
-                            dt = 0.3 * D_particles[i]/D_particles[0] # time step for force update (can be adjusted)
-                            marker_f[i, 0] -= 2 * mi * v_dot_n * nx / dt
-                            marker_f[i, 1] -= 2 * mi * v_dot_n * ny / dt
-                            marker_f[i, 2] -= 2 * mi * v_dot_n * nz / dt
+                            time_force = 0.3 * D_particles[i] / D_particles[0] # time step for force update (can be adjusted)
+                            
+                            marker_f[i, 0] -= 2 * mi * v_dot_n * nx / time_force
+                            marker_f[i, 1] -= 2 * mi * v_dot_n * ny / time_force
+                            marker_f[i, 2] -= 2 * mi * v_dot_n * nz / time_force
 
                             collided[i] = True
                             break
             
             # Check if the particle is within the height range of the cylinder
-            if abs(h_proj + vh * delta_t) <= (H_cyl / 2.0 + Ri):
+            if abs(h_proj) <= (H_cyl / 2.0 + Ri):
                 # Check if the particle is moving towards the cylinder and will collide within the time step
-                a = v_perp_x**2 + v_perp_y**2 + v_perp_z**2
+                a = v_perp_x*v_perp_x + v_perp_y*v_perp_y + v_perp_z*v_perp_z
                 b = 2.0 * (perp_x * v_perp_x + perp_y * v_perp_y + perp_z * v_perp_z)
                 c_lat_eq = dist_perp_sq - min_dist_side_sq
                 
                 if a > 0.0 and b < 0.0 and (b**2 - 4.0 * a * c_lat_eq) >= 0.0:
-                    # Check existence and calculate the time of impact 0.0 < delta_t <= dt = 1.0 within time step
+                    # Check existence and calculate the time of impact 0.0 < delta_t <= dt within time step
                     delta_t = (-b - np.sqrt(b**2 - 4.0 * a * c_lat_eq)) / (2.0 * a)
                     
-                    if 0.0 < delta_t <= 1.0:
+                    if 0.0 < delta_t <= dt:
                         # Calculate the position and distance at the time of impact with the cylinder side
                         perp_x_imp = perp_x + v_perp_x * delta_t
                         perp_y_imp = perp_y + v_perp_y * delta_t
@@ -481,15 +482,16 @@ def resolve_all_collisions(N_markers, marker_pos,marker_vel,  marker_f, D_partic
                                 vz_impact -= 2.0 * v_dot_n * nz
 
                                 # Update the position of the particle within the time step, considering the impact
-                                marker_pos[i, 0] += vx * delta_t + vx_impact * (1.0 - delta_t)
-                                marker_pos[i, 1] += vy * delta_t + vy_impact * (1.0 - delta_t)
-                                marker_pos[i, 2] += vz * delta_t + vz_impact * (1.0 - delta_t)
+                                marker_pos[i, 0] += marker_vel[i, 0] * delta_t + vx_impact * (dt - delta_t)
+                                marker_pos[i, 1] += marker_vel[i, 1] * delta_t + vy_impact * (dt - delta_t)
+                                marker_pos[i, 2] += marker_vel[i, 2] * delta_t + vz_impact * (dt - delta_t)
                                 
                                 # Update the force vector to reflect the collision with the cylinder surface
-                                dt = 0.3 * D_particles[i]/D_particles[0] # time step for force update (can be adjusted)
-                                marker_f[i, 0] -= 2 * mi * v_dot_n * nx / dt
-                                marker_f[i, 1] -= 2 * mi * v_dot_n * ny / dt
-                                marker_f[i, 2] -= 2 * mi * v_dot_n * nz / dt
+                                time_force = 0.3 * D_particles[i] / D_particles[0] # time step for force update (can be adjusted)
+                                
+                                marker_f[i, 0] -= 2 * mi * v_dot_n * nx / time_force
+                                marker_f[i, 1] -= 2 * mi * v_dot_n * ny / time_force
+                                marker_f[i, 2] -= 2 * mi * v_dot_n * nz / time_force
 
                                 collided[i] = True
                                 break
@@ -497,142 +499,184 @@ def resolve_all_collisions(N_markers, marker_pos,marker_vel,  marker_f, D_partic
     # Case 3 : no collision, free movement
     for i in range(N_markers):
         if not collided[i]:
-            marker_pos[i, 0] += marker_vel[i, 0]
-            marker_pos[i, 1] += marker_vel[i, 1]
-            marker_pos[i, 2] += marker_vel[i, 2]
+            marker_pos[i, 0] += marker_vel[i, 0] * dt
+            marker_pos[i, 1] += marker_vel[i, 1] * dt
+            marker_pos[i, 2] += marker_vel[i, 2] * dt
 
 # Lubrication corrrection
 @nb.jit(nopython=True, fastmath=True)
-def lubrication_correction_forcing(N_markers, marker_pos,marker_vel,  marker_f, D_particles, rhos, 
+def lubrication_correction_forcing(N_markers, marker_pos,marker_vel,  marker_f, D_particles, rho_0, rhos, nu, 
                             N_cylinders, cyl_pos, cyl_axis, cyl_radius, cyl_height, 
-                            wall_y, lubrication_threshold,  h_floor=1e-4):
+                            wall_y, lubrication_threshold,  h_floor=1e-4, dt=1.0):
     """
     Lubrication correction for particle-particle and particle-wall interactions.
     """
-
-    dt = 1.0 # time step
     
     # Case 1 : Particle-particle lubrication
     for i in range(N_markers):
         for j in range(i + 1, N_markers):
             
-            # Mass and radius of the particles
+            # Radius and mass of the particles
             Ri = D_particles[i] / 2.0
             Rj = D_particles[j] / 2.0
-            mi = (4.0 / 3.0) * np.pi * Ri**3 * rhos[i]
-            mj = (4.0 / 3.0) * np.pi * Rj**3 * rhos[j]
+            mi = (4.0 / 3.0) * np.pi * rhos[i] * Ri**3
+            mj = (4.0 / 3.0) * np.pi * rhos[j] * Rj**3
             
-            # Vector from marker pos and vel j to marker i
-            dx = marker_pos[i, 0] - marker_pos[j, 0]
-            dy = marker_pos[i, 1] - marker_pos[j, 1]
-            dz = marker_pos[i, 2] - marker_pos[j, 2]
-            dist = np.sqrt(dx*dx + dy*dy + dz*dz)
+            # Vector from marker pos j to marker i and distance 
+            rx = marker_pos[i, 0] - marker_pos[j, 0]
+            ry = marker_pos[i, 1] - marker_pos[j, 1]
+            rz = marker_pos[i, 2] - marker_pos[j, 2]
+            
+            dist = np.sqrt(rx*rx + ry*ry + rz*rz)
             
             if dist > 0.0:
+                # Calculate the effective gap distance for lubrication correction
                 h = dist - Ri - Rj
                 h_eff = max(h, h_floor)
 
+                # If the effective gap is within the lubrication threshold, apply the correction
                 if h_eff <= lubrication_threshold:
+                    # Calculate the normal vector and speed projection at the point of impact
+                    nx = rx / dist
+                    ny = ry / dist
+                    nz = rz / dist
+                    
+                    vx = marker_vel[i, 0] - marker_vel[j, 0]
+                    vy = marker_vel[i, 1] - marker_vel[j, 1]
+                    vz = marker_vel[i, 2] - marker_vel[j, 2]
+                    
+                    v_dot_n = vx * nx + vy * ny + vz * nz
+
+                    # Effective radius and mass for the lubrication correction
                     R_eff = Ri * Rj / (Ri + Rj)
                     m_eff = mi * mj / (mi + mj)
-
-                    U12 = marker_vel[i, :] - marker_vel[j, :]
-                    UR = (U12[0] * dx + U12[1] * dy + U12[2] * dz) / dist
-
+                    
+                    # Calculate the lubrication correction force coefficient
                     xi = 6 * np.pi * nu * rho_0 * R_eff**2 * (1.0/h_eff - 1.0/lubrication_threshold)
                     xi_eff = xi / (1.0 + xi*dt/m_eff)
-                    coef = xi_eff * UR
+                    coef = xi_eff * v_dot_n
 
-                    marker_f[i, 0] -= coef * dx/dist
-                    marker_f[i, 1] -= coef * dy/dist
-                    marker_f[i, 2] -= coef * dz/dist
+                    # Update the force vectors to reflect the lubrication correction between the particles
+                    marker_f[i, 0] -= coef * nx
+                    marker_f[i, 1] -= coef * ny
+                    marker_f[i, 2] -= coef * nz
                     
-                    marker_f[j, 0] += coef * dx / dist
-                    marker_f[j, 1] += coef * dy / dist
-                    marker_f[j, 2] += coef * dz / dist
+                    marker_f[j, 0] += coef * nx
+                    marker_f[j, 1] += coef * ny
+                    marker_f[j, 2] += coef * nz
 
     # Case 2 : Particle-wall lubrication
     h_wall_out = 0.0
     for i in range(N_markers):
         
-        # Mass and radius of the particle
+        # Radius and mass of the particle
         Ri = D_particles[i] / 2.0
-        mi = (4.0 / 3.0) * np.pi * Ri**3 * rhos[i]
+        mi = (4.0 / 3.0) * np.pi * rhos[i] * Ri**3
         
+        # Calculate the effective gap distance for lubrication correction
         h_wall = (marker_pos[i, 1] - Ri) - wall_y
         h_eff = max(h_wall, h_floor)
         h_wall_out = h_wall
 
+        # If the effective gap is within the lubrication threshold, apply the correction
         if h_eff <= lubrication_threshold:
 
-            UR = marker_vel[i, 1]  # mur fixe
+            v_dot_n = marker_vel[i, 1] # fixed wall normal vector (0, 1, 0)
 
+            # Calculate the lubrication correction force coefficient
             xi = 6 * np.pi * nu * rho_0 * Ri**2 * (1.0/h_eff - 1.0/lubrication_threshold)
             xi_eff = xi / (1.0 + xi*dt/mi)
+            coef = xi_eff * v_dot_n
 
-            marker_f[i, 1] -= xi_eff * UR
+            # Update the force vectors to reflect the lubrication correction
+            marker_f[i, 1] -= coef
 
     # Case 3 : Particle-cylinder lubrication
     for i in range(N_markers):
+        # Radius and mass of the particle
         Ri = D_particles[i] / 2.0
-        mi = (4.0 / 3.0) * np.pi * rhos[i] * (Ri**3)
-
+        mi = (4.0 / 3.0) * np.pi * rhos[i] * Ri**3
+        
+        # Loop over all cylinders to check for potential lubrication interactions
         for c in range(N_cylinders):
+            # Cylinder properties
             pos_c = cyl_pos[c]
             axis_c = cyl_axis[c]
             R_cyl = cyl_radius[c]
             H_cyl = cyl_height[c]
 
+            # Vector from cylinder center to marker position, velocity, and projection onto cylinder axis
             rx = marker_pos[i, 0] - pos_c[0]
             ry = marker_pos[i, 1] - pos_c[1]
             rz = marker_pos[i, 2] - pos_c[2]
 
+            vx = marker_vel[i, 0]
+            vy = marker_vel[i, 1]
+            vz = marker_vel[i, 2]
+            
             h_proj = rx * axis_c[0] + ry * axis_c[1] + rz * axis_c[2]
+            
             perp_x = rx - h_proj * axis_c[0]
             perp_y = ry - h_proj * axis_c[1]
             perp_z = rz - h_proj * axis_c[2]
-            dist_perp = np.sqrt(perp_x**2 + perp_y**2 + perp_z**2)
+            
+            dist_perp = np.sqrt(perp_x*perp_x + perp_y*perp_y + perp_z*perp_z)
             
             # Check if the particle is within the radius range of the cylinder
-            if dist_perp <= R_cyl:
+            if dist_perp <= R_cyl and abs(h_proj) >= (H_cyl / 2.0):
+                # Calculate the effective gap distance for lubrication correction
                 h_gap = abs(h_proj) - (H_cyl / 2.0 + Ri)
                 h_eff = max(h_gap, h_floor)
 
+                # If the effective gap is within the lubrication threshold, apply the correction
                 if h_eff <= lubrication_threshold:
+                    # Calculate the normal vector and speed projection at the point of impact
                     sign_cap = 1.0 if h_proj > 0 else -1.0
                     nx = sign_cap * axis_c[0]
                     ny = sign_cap * axis_c[1]
                     nz = sign_cap * axis_c[2]
 
-                    UR = marker_vel[i, 0] * nx + marker_vel[i, 1] * ny + marker_vel[i, 2] * nz
-                    xi = 6.0 * np.pi * nu * rho_0 * (Ri**2) * (1.0 / h_eff - 1.0 / lubrication_threshold)
+                    v_dot_n = vx * nx + vy * ny + vz * nz
+                    
+                    # Calculate the lubrication correction force coefficient
+                    xi = 6.0 * np.pi * nu * rho_0 * Ri**2 * (1.0 / h_eff - 1.0 / lubrication_threshold)
                     xi_eff = xi / (1.0 + xi * dt / mi)
+                    coef = xi_eff * v_dot_n
 
-                    marker_f[i, 0] -= xi_eff * UR * nx
-                    marker_f[i, 1] -= xi_eff * UR * ny
-                    marker_f[i, 2] -= xi_eff * UR * nz
+                    # Update the force vectors to reflect the lubrication correction with the cylinder
+                    marker_f[i, 0] -= coef * nx
+                    marker_f[i, 1] -= coef * ny
+                    marker_f[i, 2] -= coef * nz
             
             # Check if the particle is within the height of the cylinder
             elif abs(h_proj) <= (H_cyl / 2.0):
                 
                 if dist_perp > 0.0:
+                    # Calculate the effective gap distance for lubrication correction
                     h_gap = dist_perp - (R_cyl + Ri)
                     h_eff = max(h_gap, h_floor)
 
+                    # If the effective gap is within the lubrication threshold, apply the correction
                     if h_eff <= lubrication_threshold:
+                        # Calculate the normal vector and speed projection at the point of impact
                         nx = perp_x / dist_perp
                         ny = perp_y / dist_perp
                         nz = perp_z / dist_perp
 
-                        R_eff = (Ri * R_cyl) / (Ri + R_cyl)
-                        UR = marker_vel[i, 0] * nx + marker_vel[i, 1] * ny + marker_vel[i, 2] * nz
+                        v_dot_n = vx * nx + vy * ny + vz * nz
 
-                        xi = 6.0 * np.pi * nu * rho_0 * (R_eff**2) * (1.0 / h_eff - 1.0 / lubrication_threshold)
+                        # Calculate the effective radius for the lubrication correction
+                        R_eff = Ri * R_cyl / (Ri + R_cyl)
+                        
+                        # Calculate the lubrication correction force coefficient
+                        xi = 6.0 * np.pi * nu * rho_0 * R_eff**2 * (1.0 / h_eff - 1.0 / lubrication_threshold)
                         xi_eff = xi / (1.0 + xi * dt / mi)
+                        coef = xi_eff * v_dot_n
 
-                        marker_f[i, 0] -= xi_eff * UR * nx
-                        marker_f[i, 1] -= xi_eff * UR * ny
-                        marker_f[i, 2] -= xi_eff * UR * nz
+                        # Update the force vectors to reflect the lubrication correction with the cylinder
+                        marker_f[i, 0] -= coef * nx
+                        marker_f[i, 1] -= coef * ny
+                        marker_f[i, 2] -= coef * nz
     
     return h_wall_out
 
@@ -734,7 +778,7 @@ initialise_obstacle(obstacle, Nx, Ny, Nz, cyl_pos, cyl_axis, cyl_radius, cyl_hei
 
 #%% Force Distribution Function Analysis
 if show_gaus_dist:
-    plot_gaus_dist(Ny, dist_func, r_particle2, f_dist_width, r_gaus, sigma, A, r_cutoff, r_cutoff_outer, IB_kernel, N_markers, marker_pos)
+    plot_gaus_dist(Ny, dist_func, r_particles[0], f_dist_width, r_gaus, sigma, A, r_cutoff, r_cutoff_outer, IB_kernel, N_markers, marker_pos)
 
 
 
@@ -832,9 +876,9 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
     for t in iterations:
         # Initial force distribution for the first 100 steps
         if t < 100:
-            marker_f[0, 0] = 0.5 # initial force marker 1
+            marker_f[0, 0] = 2 # initial force marker 1
             marker_f[1, 1] = -2 # initial force marker 2
-            marker_f[2, 1] = 0.5 # initial force marker 3
+            marker_f[2, 1] = 2 # initial force marker 3
         
         # Remove force after 100 steps
         if t>=100:
@@ -842,22 +886,22 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
             marker_f[2, 1] = 0 # update force marker 3
         
         if np.isnan(u_mag_sq).any():
-            imageio.mimsave('particle_diffusion_v5.gif', frames, fps=10, loop=0)
+            imageio.mimsave(f'{output_name}.gif', frames, fps=10, loop=0)
             raise RuntimeError(f'Unrealistic velocities: t={t}')
         
         # Calculate marker forces
-        if brownian_method == "force":
-            brownian_forcing(N_markers, marker_f)
+        # if brownian_method == "force":
+        #     brownian_forcing(N_markers, marker_f)
             
         # Lubrication force
-        h_wall = lubrication_correction_forcing(N_markers, marker_pos, marker_vel,  marker_f, D_particles, rhos, 
+        h_wall = lubrication_correction_forcing(N_markers, marker_pos, marker_vel,  marker_f, D_particles, rho_0, rhos, nu,
                             N_cylinders, cyl_pos, cyl_axis, cyl_radius, cyl_height, 
-                            wall_y, lubrication_threshold, h_floor=1e-4)
+                            wall_y, lubrication_threshold, h_floor=1e-4, dt=1.0)
         h_walls.append(h_wall)
 
         # Resolve collisions and update marker positions and forces
-        resolve_all_collisions(N_markers, marker_pos, marker_vel,  marker_f, D_particles, rhos, 
-                            N_cylinders, cyl_pos, cyl_axis, cyl_radius, cyl_height)
+        resolve_all_collisions(N_markers, marker_pos, marker_vel,  marker_f, D_particles, rhos, nu, 
+                            N_cylinders, cyl_pos, cyl_axis, cyl_radius, cyl_height, dt=1.0)
         
         # Calculate forcing due to IB markers
         int_err = IB_force_density(Nx, Ny, Nz, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, F, 
@@ -872,7 +916,6 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
         interpolate_marker_vels(u, N_markers, marker_vel, marker_nh, marker_nh_size)
         
         # Integrate boundary markers
-        # marker_pos += marker_vel # since dt=1
         marker_f *= 0.0 # update forces based on resolved collisions
         marker_pos_old = marker_pos.copy() # store old positions for collision resolution
         
@@ -900,40 +943,6 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
             #     break
             if m == N_markers-1:
                 save_data = (t%outevery == 0) or (t == Nt-1)
-        
-        
-        # Output flow field at particle cross-section
-        # if save_data and live_flow_plot:
-        #     u_mag_sq_curr = np.max(u_mag_sq)
-        #     if u_mag_sq_curr > u_mag_sq_max:
-        #         u_mag_sq_max = u_mag_sq_curr
-            
-        #     m = 0 # only plot the first marker
-        #     z_slice = min(max(int(round(marker_pos[m, 2])), 0), Nz-1)
-            
-        #     plt.figure(figsize=(5, 4))
-        #     im = plt.imshow(np.sqrt(u_mag_sq[:, :, z_slice]).T, cmap='viridis', origin='lower', vmin=0, vmax=u_mag_sq_max**0.5)
-        #     # im = plt.imshow(u[:, :, z_slice, 0].T, cmap='viridis', origin='lower')
-        #     # im = plt.imshow(rho[:, :, z_slice].T, cmap='viridis', origin='lower')
-        #     # im = plt.imshow(F[:, :, z_slice, 0].T, cmap='viridis', origin='lower')
-        #     plt.colorbar(im, label='Velocity Magnitude')
-            
-        #     for m in range(N_markers):
-        #         plt.plot(marker_pos_hist[m, :t+1, 0], marker_pos_hist[m, :t+1, 1], 'r', alpha=0.5)
-        #         plt.plot(init_marker_pos[m, 0], init_marker_pos[m, 1], 'xr')
-                
-        #         circle = plt.Circle((marker_pos[m, 0], marker_pos[m, 1]), r_particles[m], color='red', fill=False, linewidth=1.5)
-        #         plt.gca().add_patch(circle)
-            
-        #     plt.xlim([0, Nx-1])
-        #     plt.ylim([0, Ny-1])
-            
-        #     plt.title(f'3D Particle Diffusion - {IB_kernel} IBM\nZ Position = {z_slice}, t = {t}')
-        #     plt.xlabel('X Position')
-        #     plt.ylabel('Y Position')
-        #     plt.tight_layout()
-        #     # plt.savefig(f'{t}_diff_ani.png')
-        #     plt.show()
         
         # Output flow field at particle cross-section
         if save_data and live_flow_plot:
@@ -1053,7 +1062,7 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
             break
     
     if live_flow_plot and len(frames) > 0:
-        imageio.mimsave('particle_diffusion_merge_codes.gif', frames, fps=10, loop=0)
+        imageio.mimsave(f'{output_name}.gif', frames, fps=10, loop=0)
     end_time = time.perf_counter()
     loop_wt = end_time - start_time
     cell_updates = n_lattice*(t+1)
