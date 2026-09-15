@@ -968,7 +968,7 @@ def save_interactive_3d_html(filename, fluid_history, marker_pos_history,
         traces = [go.Volume(
             x=grid_x.ravel(), y=grid_y.ravel(), z=grid_z.ravel(),
             value=fluid_speed.ravel(), isomin=0.0, isomax=fluid_max,
-            opacity=0.15,
+            opacity=fluid_visual_alpha,
             surface_count=20, colorscale='Viridis',
             caps=dict(x_show=False, y_show=False, z_show=False),
             colorbar=dict(title='Velocity Magnitude', x=1.08,
