@@ -63,11 +63,13 @@ import imageio
 from matplotlib.patches import Polygon
 import matplotlib.cm as cm
 from fractions import Fraction
+from pathlib import Path
 
 from obs_forced_LBGK_lib import get_LBM_consts, initialise_pops, update_LBM_pops_closed#, update_LBM_pops_closed_combined
 from multi_marker_IBM_lib_v2 import gaus_consts, gaus_dist, dual_gaus_consts, dual_gaus_dist, plot_gaus_dist, IB_force_density, interpolate_marker_vels
 
 max_mem_avail = 12.0e9 # maximum available memory [bytes]
+
 output_name = 'particle_diffusion_merge_codes' # name of the output file name
 
 #%% Problem Input Parameters
@@ -75,8 +77,9 @@ output_name = 'particle_diffusion_merge_codes' # name of the output file name
 # Graphing and Outputs
 show_gaus_dist = False # plot the y distribution of the force distribution function
 live_flow_plot = True # plot the flow field during the simulation
-N_outputs = 10 # n.o. times to plot the solution field (only if live_flow_plot=True)
+N_outputs = 5 # n.o. times to plot the solution field (only if live_flow_plot=True)
 show_mass = False # plot the total fluid mass over the simulation duration - can be useful for identifying instabilities (should remain constant)
+save_last_frame = True # save the last frame of the simulation as a .png file
 
 
 # Simulation Duration
@@ -102,7 +105,7 @@ D_particle3 = 4
 D_particle4 = 4
 D_particles = np.array([D_particle1, D_particle2, D_particle3, D_particle4]) # list of particle diameters
 r_particles = np.array([D/2 for D in D_particles]) # list of particle radii
-spacing_mutl = 10 # control the spacing between the particle and the domain walls
+spacing_mutl = 3 # control the spacing between the particle and the domain walls
 
 Nx = int(spacing_mutl*D_particle1+1) # simulation domain length
 Ny = Nx # simulation domain height
@@ -112,7 +115,7 @@ n_lattice = Nx*Ny*Nz # total n.o. fluid nodes
 cx_particle = (Nx-1)/2 # particle initial x position
 cy_particle = (Ny-1)/2 # particle initial y position
 cz_particle = (Nz-1)/2 # particle initial z position
-N_markers = 4 # number of particle markers - need to offset initial positions for anything to happen when increasing this from 1
+N_markers = 1 # number of particle markers - need to offset initial positions for anything to happen when increasing this from 1
 
 stop_dist = D_particle1/2.0 # minimum distance from the particle to the wall before the simulation is stopped
 stopping_lims = [[stop_dist, Nx-1-stop_dist], [stop_dist, Ny-1-stop_dist], [stop_dist, Nz-1-stop_dist]]
@@ -140,7 +143,7 @@ brownian_method = ['none', 'force', 'fluctuation'][2] # which method to use for 
 lubrication_threshold = 2/3
 
 # Cylinder (fiber) properties
-N_cylinders = 3
+N_cylinders = 0
 cyl_pos = np.array([[25.0, 35.0, 35.0],
                     [35.0, 28.0, 35.0],
                     [50.0, 45.0, 25.0]])   # Centers (X, Y, Z)
@@ -761,7 +764,7 @@ pops_post = np.empty_like(pops_pre) # second DVDF array for efficient data writi
 
 
 # Obstacle Array
-obstacle = np.zeros_like(rho, dtype=np.bool)
+obstacle = np.zeros_like(rho, dtype=bool)
 
 # IBM setup
 sigma = np.empty(N_markers, dtype=np.float64)
@@ -928,6 +931,8 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
     last_frame = None
     h_walls = []
     
+    last_frame_path = Path(__file__).resolve().parent.parent / f'{output_name}_last_frame.png'
+    
     for t in iterations:
         # # Initial force distribution for the first 100 steps
         # if t < 100:
@@ -1005,7 +1010,8 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
                 save_data = (t%outevery == 0) or (t == Nt-1)
         
         # Output flow field at particle cross-section
-        if save_data and live_flow_plot:
+        render_frame = save_data and (live_flow_plot or (save_last_frame and t == Nt - 1))
+        if render_frame:
             u_mag_sq_curr = np.max(u_mag_sq)
             if u_mag_sq_curr > u_mag_sq_max:
                 u_mag_sq_max = u_mag_sq_curr
@@ -1013,7 +1019,7 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
             m = 0
             z_slice = min(max(int(round(marker_pos[m, 2])), 0), Nz-1)
             
-            fig, ax = plt.subplots(figsize=(5, 4))
+            fig, ax = plt.subplots(figsize=(5, 4), dpi=200)
             im = ax.imshow(np.sqrt(u_mag_sq[:, :, z_slice]).T, cmap='viridis', origin='lower', vmin=0, vmax=u_mag_sq_max**0.5)
             plt.colorbar(im, label='Velocity Magnitude')
             
@@ -1090,8 +1096,8 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
                     thick_map = compute_cylinder_z_thickness(cyl_pos[c_idx], cyl_axis[c_idx], 
                                                             cyl_radius[c_idx], cyl_height[c_idx], gx, gy)
                     
-                    from matplotlib.path import Path
-                    path = Path(sorted_pts)
+                    from matplotlib.path import Path as MplPath
+                    path = MplPath(sorted_pts)
                     points = np.column_stack((gx.flatten(), gy.flatten()))
                     mask = path.contains_points(points).reshape(gx.shape)
                     

@@ -71,13 +71,13 @@ max_mem_avail = 12.0e9 # maximum available memory [bytes]
 
 # Graphing and Outputs
 show_gaus_dist = False # plot the y distribution of the force distribution function
-live_flow_plot = True # plot the flow field during the simulation
-N_outputs = 5 # n.o. times to plot the solution field (only if live_flow_plot=True)
+live_flow_plot = False # plot the flow field during the simulation
+N_outputs = 2 # n.o. times to plot the solution field (only if live_flow_plot=True)
 show_mass = False # plot the total fluid mass over the simulation duration - can be useful for identifying instabilities (should remain constant)
-
+save_last_frame = True # save the last frame of the simulation as a .png file 
 
 # Simulation Duration
-sim_time = 1000 # simulation time [s] - adjust accordingly
+sim_time = 10000 # simulation time [s] - adjust accordingly
 
 
 # Fluid Domain Boundary Conditions
@@ -94,7 +94,7 @@ BCs = np.array(BCs, dtype=np.uint8)
 # Geometry
 D_particle = 7 # number of lattice points across the particle diameter
 r_particle = D_particle/2 # particle radius
-spacing_mutl = 3 # control the spacing between the particle and the domain walls
+spacing_mutl = 4 # control the spacing between the particle and the domain walls
 
 Nx = int(spacing_mutl*D_particle+1) # simulation domain length
 Ny = Nx # simulation domain height
@@ -110,7 +110,7 @@ stop_dist = r_particle # minimum distance from the particle to the wall before t
 #stopping_lims = [[stop_dist, Nx-1-stop_dist], [stop_dist, Ny-1-stop_dist], [stop_dist, Nz-1-stop_dist]]
 
 # IBM
-IB_kernel = ['standard gaussian', 'dual gaussian'][0] # force distribution function to use
+IB_kernel = ['standard gaussian', 'dual gaussian'][1] # force distribution function to use
 f_dist_width = 2 # width of the surface gaussian force distribution function [lattice points] (only for dual gaussian IB kernel)
 
 
@@ -123,7 +123,7 @@ mu = rho_0*nu # dynamic viscosity [kg m-1 s-1]
 # Diffusion
 kB_T = 0.005
 gamma = 6*np.pi*mu*r_particle # drag coefficient
-brownian_method = ['none', 'force', 'fluctuation'][2] # which method to use for the brownian motion of the particle - 'none' = no forcing, 'force' = Langevin approach, 'fluctuation' = fluctuating hydrodynamics approach
+brownian_method = ['none', 'force', 'fluctuation'][1] # which method to use for the brownian motion of the particle - 'none' = no forcing, 'force' = Langevin approach, 'fluctuation' = fluctuating hydrodynamics approach
 
 
 
@@ -342,12 +342,11 @@ def save_marker_data(step, marker_pos_hist, marker_vel_hist, marker_f_hist, N_ma
 
 
 
-import imageio.v2 as imageio  # Nécessaire pour la création du GIF
 import io
 def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, marker_pos, marker_vel, marker_f, marker_nh, marker_nh_size, 
                  Nt, Nx, Ny, Nz, n_lattice, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, dist_func, r_gaus, sigma, A, stopping_lims, 
                  inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, BCs, skip_stop_check, 
-                live_flow_plot, outevery, brownian_method):
+                live_flow_plot, save_last_frame, outevery, brownian_method):
 
     break_cond = False
     int_err = 0.0
@@ -362,6 +361,8 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
     start_time = time.perf_counter()
         
     gif_frames = []
+    if live_flow_plot:
+        import imageio.v2 as imageio
     
     for t in iterations:
         
@@ -414,8 +415,9 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
                 save_data = (t%outevery == 0) or (t == Nt-1)
         
         
-        # Enregistrement des frames pour le GIF au lieu de plt.show()
-        if save_data and live_flow_plot:
+        # Generate frames for the GIF and/or save the final frame as a PNG.
+        save_current_frame = save_data and (live_flow_plot or save_last_frame)
+        if save_current_frame:
             u_mag_sq_curr = np.max(u_mag_sq)
             if u_mag_sq_curr > u_mag_sq_max:
                 u_mag_sq_max = u_mag_sq_curr
@@ -441,12 +443,18 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
             ax.set_ylabel('Y Position')
             fig.tight_layout()
             
-            # Capture de la figure dans un buffer mémoire (sans l'afficher à l'écran)
-            buf = io.BytesIO()
-            fig.savefig(buf, format='png', dpi=100)
-            buf.seek(0)
-            gif_frames.append(imageio.imread(buf))
-            plt.close(fig) # Ferme la figure pour libérer la mémoire RAM
+            if live_flow_plot:
+                buf = io.BytesIO()
+                fig.savefig(buf, format='png', dpi=300)
+                buf.seek(0)
+                gif_frames.append(imageio.imread(buf))
+
+            if save_last_frame and (t == Nt-1 or break_cond):
+                last_frame_filename = 'diffusion_simulation_last_frame.png'
+                fig.savefig(last_frame_filename, dpi=300)
+                print(f'Last frame saved as: {last_frame_filename}')
+
+            plt.close(fig)
         
         if break_cond:
             break
@@ -485,7 +493,7 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
 sim_res = run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, marker_pos, marker_vel, marker_f, marker_nh, marker_nh_size, 
                         Nt, Nx, Ny, Nz, n_lattice, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, dist_func, r_gaus, sigma, A, stopping_lims, 
                         inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, 
-                        BCs, skip_stop_check, live_flow_plot, outevery, brownian_method)
+                        BCs, skip_stop_check, live_flow_plot, save_last_frame, outevery, brownian_method)
 
 marker_pos_hist, marker_vel_hist, marker_f_hist, fluid_mass_hist, simtime_reached = sim_res
 
