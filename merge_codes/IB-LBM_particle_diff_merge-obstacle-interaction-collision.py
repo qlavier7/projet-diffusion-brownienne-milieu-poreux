@@ -124,17 +124,17 @@ f_dist_width = 2 # width of the surface gaussian force distribution function [la
 
 
 # Fluid
-nu = 1/6 # kinematic viscosity [m2 s-1]
+nu = 1/50 # kinematic viscosity [m2 s-1]
 rho_0 = 1.0 # initial density [kg m-3]
 mu = rho_0*nu # dynamic viscosity [kg m-1 s-1]
 
 # Particle volumic masses
-rhos = np.ones(N_markers, dtype=np.float64) * rho_0 # list of particle densities (assumed to be the same for now)
+rhos = np.ones(N_markers, dtype=np.float64) * 1.14 * rho_0 # list of particle densities (assumed to be the same for now)
 
 # Diffusion
 kB_T = 0.005
 gammas = 6 * np.pi * mu * r_particles # drag coefficient
-brownian_method = ['none', 'force', 'fluctuation'][2] # which method to use for the brownian motion of the particle - 'none' = no forcing, 'force' = Langevin approach, 'fluctuation' = fluctuating hydrodynamics approach
+brownian_method = ['none', 'force', 'fluctuation'][0] # which method to use for the brownian motion of the particle - 'none' = no forcing, 'force' = Langevin approach, 'fluctuation' = fluctuating hydrodynamics approach
 
 # Lubrication force properties
 lubrication_threshold = 2/3
@@ -339,8 +339,8 @@ def resolve_all_collisions(N_markers, marker_pos,marker_vel,  marker_f, D_partic
                             marker_pos[j, 2] += marker_vel[j, 2] * delta_t + vzj_impact * (dt - delta_t)
 
                             # Update the force vectors to reflect the collision between the particles
-                            time_force_i = dt # 0.3 * D_particles[i] / D_particles[0]
-                            time_force_j = dt # 0.3 * D_particles[j] / D_particles[0]
+                            time_force_i = 0.3 * D_particles[i] / D_particles[0]
+                            time_force_j = 0.3 * D_particles[j] / D_particles[0]
 
                             marker_f[i, 0] -= 2.0 * m_eff * v_dot_n * nx / time_force_i
                             marker_f[i, 1] -= 2.0 * m_eff * v_dot_n * ny / time_force_i
@@ -391,7 +391,7 @@ def resolve_all_collisions(N_markers, marker_pos,marker_vel,  marker_f, D_partic
                 marker_pos[i, 2] += marker_vel[i, 2] * delta_t + vzi_impact * (dt - delta_t)
 
                 # Update the force vector to reflect the collision with the wall
-                time_force = dt # 0.3 * D_particles[i] / D_particles[0]
+                time_force = 0.3 * D_particles[i] / D_particles[0]
 
                 marker_f[i, 1] -= 2.0 * mi * v_dot_n * ny / time_force
 
@@ -483,7 +483,7 @@ def resolve_all_collisions(N_markers, marker_pos,marker_vel,  marker_f, D_partic
                             marker_pos[i, 2] += marker_vel[i, 2] * delta_t + vz_impact * (dt - delta_t)
 
                             # Update the force vector to reflect the collision with the cylinder surface
-                            time_force = dt # 0.3 * D_particles[i] / D_particles[0] # time step for force update (can be adjusted)
+                            time_force = 0.3 * D_particles[i] / D_particles[0] # time step for force update (can be adjusted)
                             
                             marker_f[i, 0] -= 2 * mi * v_dot_n * nx / time_force
                             marker_f[i, 1] -= 2 * mi * v_dot_n * ny / time_force
@@ -536,7 +536,7 @@ def resolve_all_collisions(N_markers, marker_pos,marker_vel,  marker_f, D_partic
                                 marker_pos[i, 2] += marker_vel[i, 2] * delta_t + vz_impact * (dt - delta_t)
                                 
                                 # Update the force vector to reflect the collision with the cylinder surface
-                                time_force = dt # 0.3 * D_particles[i] / D_particles[0] # time step for force update (can be adjusted)
+                                time_force = 0.3 * D_particles[i] / D_particles[0] # time step for force update (can be adjusted)
                                 
                                 marker_f[i, 0] -= 2 * mi * v_dot_n * nx / time_force
                                 marker_f[i, 1] -= 2 * mi * v_dot_n * ny / time_force
@@ -929,21 +929,21 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
     h_walls = []
     
     for t in iterations:
-        # # Initial force distribution for the first 100 steps
-        # if t < 100:
-        #     marker_f[0, 0] = 1 # initial force marker 1. Use 1 for nu = 1/50, 3 for nu = 1/6
-        #     marker_f[0, 1] = 1 # Use 1 for nu = 1/50, 3 for nu = 1/6
-        #     marker_f[1, 1] = 2 # initial force marker 2. Use 2 for nu = 1/50, 8 for nu = 1/6
-        #     marker_f[2, 0] = 0.3 # initial force marker 3. Use 0.3 for nu = 1/50, 1.5 for nu = 1/6
-        #     marker_f[2, 1] = 0.3 # Use 0.3 for nu = 1/50, 1.5 for nu = 1/6
+        # Initial force distribution for the first 100 steps
+        if t < 100:
+            marker_f[0, 0] = 1 # initial force marker 1. Use 1 for nu = 1/50, 3 for nu = 1/6
+            marker_f[0, 1] = 1 # Use 1 for nu = 1/50, 3 for nu = 1/6
+            marker_f[1, 1] = 2 # initial force marker 2. Use 2 for nu = 1/50, 8 for nu = 1/6
+            marker_f[2, 0] = 0.3 # initial force marker 3. Use 0.3 for nu = 1/50, 1.5 for nu = 1/6
+            marker_f[2, 1] = 0.3 # Use 0.3 for nu = 1/50, 1.5 for nu = 1/6
         
-        # # Remove force after 100 steps
-        # if t>=100:
-        #     marker_f[0, 0] = 0 # update force marker 1
-        #     marker_f[0, 1] = 0
-        #     marker_f[1, 1] = 0 # update force marker 2
-        #     marker_f[2, 0] = 0 # update force marker 3
-        #     marker_f[2, 1] = 0
+        # Remove force after 100 steps
+        if t>=100:
+            marker_f[0, 0] = 0 # update force marker 1
+            marker_f[0, 1] = 0
+            marker_f[1, 1] = 0 # update force marker 2
+            marker_f[2, 0] = 0 # update force marker 3
+            marker_f[2, 1] = 0
         
         if np.isnan(u_mag_sq).any():
             imageio.mimsave(f'{output_name}.gif', frames, fps=10, loop=0)

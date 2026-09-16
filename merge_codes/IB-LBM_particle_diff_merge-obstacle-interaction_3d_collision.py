@@ -53,6 +53,7 @@ Created on Wed Aug 26 13:26:02 2026
 Author: Max Robbins
 """
 
+import io
 import time
 import tqdm
 import warnings
@@ -60,7 +61,8 @@ import numpy as np
 import numba as nb
 import matplotlib.pyplot as plt
 import imageio
-from matplotlib.patches import Polygon
+from PIL import Image
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import matplotlib.cm as cm
 from fractions import Fraction
 
@@ -68,7 +70,7 @@ from obs_forced_LBGK_lib import get_LBM_consts, initialise_pops, update_LBM_pops
 from multi_marker_IBM_lib_v2 import gaus_consts, gaus_dist, dual_gaus_consts, dual_gaus_dist, plot_gaus_dist, IB_force_density, interpolate_marker_vels
 
 max_mem_avail = 12.0e9 # maximum available memory [bytes]
-output_name = 'particle_diffusion_merge_codes' # name of the output file name
+output_name = 'particle_diffusion_merge_codes_3d' # name of the output file name
 
 #%% Problem Input Parameters
 
@@ -77,6 +79,10 @@ show_gaus_dist = False # plot the y distribution of the force distribution funct
 live_flow_plot = True # plot the flow field during the simulation
 N_outputs = 10 # n.o. times to plot the solution field (only if live_flow_plot=True)
 show_mass = False # plot the total fluid mass over the simulation duration - can be useful for identifying instabilities (should remain constant)
+interactive_3d_view = True # keep the 3D view open so it can be rotated with the mouse
+fluid_visual_stride = 4 # reduce the number of fluid points drawn in the 3D view
+fluid_visual_alpha = 0.15 # transparency of the velocity field
+interactive_html_name = f'{output_name}_interactive.html'
 
 
 # Simulation Duration
@@ -100,7 +106,8 @@ D_particle1 = 7 # number of lattice points across the particle diameter
 D_particle2 = 10
 D_particle3 = 4
 D_particle4 = 4
-D_particles = np.array([D_particle1, D_particle2, D_particle3, D_particle4]) # list of particle diameters
+D_particle5 = 7
+D_particles = np.array([D_particle1, D_particle2, D_particle3, D_particle4, D_particle5]) # list of particle diameters
 r_particles = np.array([D/2 for D in D_particles]) # list of particle radii
 spacing_mutl = 10 # control the spacing between the particle and the domain walls
 
@@ -112,7 +119,7 @@ n_lattice = Nx*Ny*Nz # total n.o. fluid nodes
 cx_particle = (Nx-1)/2 # particle initial x position
 cy_particle = (Ny-1)/2 # particle initial y position
 cz_particle = (Nz-1)/2 # particle initial z position
-N_markers = 4 # number of particle markers - need to offset initial positions for anything to happen when increasing this from 1
+N_markers = 5 # number of particle markers - need to offset initial positions for anything to happen when increasing this from 1
 
 stop_dist = D_particle1/2.0 # minimum distance from the particle to the wall before the simulation is stopped
 stopping_lims = [[stop_dist, Nx-1-stop_dist], [stop_dist, Ny-1-stop_dist], [stop_dist, Nz-1-stop_dist]]
@@ -124,32 +131,58 @@ f_dist_width = 2 # width of the surface gaussian force distribution function [la
 
 
 # Fluid
-nu = 1/6 # kinematic viscosity [m2 s-1]
+nu = 1/50 # kinematic viscosity [m2 s-1]
 rho_0 = 1.0 # initial density [kg m-3]
 mu = rho_0*nu # dynamic viscosity [kg m-1 s-1]
 
 # Particle volumic masses
-rhos = np.ones(N_markers, dtype=np.float64) * rho_0 # list of particle densities (assumed to be the same for now)
+rhos = np.ones(N_markers, dtype=np.float64) * 1.14 * rho_0 # list of particle densities (assumed to be the same for now)
 
 # Diffusion
 kB_T = 0.005
 gammas = 6 * np.pi * mu * r_particles # drag coefficient
-brownian_method = ['none', 'force', 'fluctuation'][2] # which method to use for the brownian motion of the particle - 'none' = no forcing, 'force' = Langevin approach, 'fluctuation' = fluctuating hydrodynamics approach
+brownian_method = ['none', 'force', 'fluctuation'][0] # which method to use for the brownian motion of the particle - 'none' = no forcing, 'force' = Langevin approach, 'fluctuation' = fluctuating hydrodynamics approach
 
 # Lubrication force properties
 lubrication_threshold = 2/3
 
 # Cylinder (fiber) properties
-N_cylinders = 3
-cyl_pos = np.array([[25.0, 35.0, 35.0],
-                    [35.0, 28.0, 35.0],
-                    [50.0, 45.0, 25.0]])   # Centers (X, Y, Z)
-cyl_axis = np.array([[0.0, 1.0, 0.0],
-                    [1.0, 0.2, 0.0],
-                    [0.0, 1.0, 1.0]])      # Orientations (X, Y, Z)
-cyl_axis = cyl_axis / np.linalg.norm(cyl_axis, axis=1)[:, np.newaxis]  # Normalize each axis vector
-cyl_radius = np.array([3.0, 2.5, 2.8])          # Radius of the cylinders
-cyl_height = np.array([55.0, 55.0, 50.0])         # Height of the cylinders
+N_cylinders = 15
+cyl_pos = np.array([[39.73826903, 50.04803511, 25.49636701],
+ [28.35359351, 48.11632415, 11.01871007],
+ [30.3046814, 26.83570914, 59.9399691],
+ [11.79969643, 38.22226259, 56.96111038],
+ [41.2646109, 34.81384536, 60.22075185],
+ [54.57165502, 38.94567098, 45.21487225],
+ [58.26322137, 50.28752166, 52.91381851],
+ [45.84420689, 40.70817823, 25.07490338],
+ [18.49779025, 24.02113966, 29.70694186],
+ [50.83878352, 35.10423119, 31.79229954],
+ [39.20755257, 31.52942555, 26.25103417],
+ [29.75738026, 17.60768989, 18.22485609],
+ [45.00751278, 49.8991141,  11.16134328],
+ [25.09820538, 22.20323613, 33.00885704],
+ [41.18867026, 20.83706829, 22.39435512]])
+cyl_axis = np.array([[-0.32705886,  0.07299237,  0.94218078],
+ [-0.20326828,  0.5412865,   0.81589885],
+ [-0.25853134, -0.88184185, -0.3943558],
+ [-0.09109105, -0.69871386,  0.7095783],
+ [ 0.81002084, -0.57682278, -0.10555435],
+ [-0.78388715,  0.50878394,  0.355893],
+ [ 0.53214584, -0.57546765, -0.62101352],
+ [-0.57695913,  0.51361324,  0.63507448],
+ [ 0.8677287,  -0.22827657, -0.44151638],
+ [ 0.56338357,  0.74392857,  0.35940123],
+ [-0.08687344, -0.63234676,  0.76979905],
+ [ 0.73099475,  0.01470181, -0.68222469],
+ [ 0.63086449,  0.39964352, -0.66505267],
+ [-0.56845382, -0.82266452,  0.00912862],
+ [-0.30272063,  0.95301689,  0.01091028]])
+cyl_radius = np.array([3.5, 2.0, 5.0, 2.0, 2.0, 3.5, 2.0, 5.0, 3.5, 2.0, 2.0, 2.0, 5.0, 5.0, 2.0])
+cyl_height = np.array([73.10071798, 63.06668298, 57.28890486, 61.25251451, 72.2930215, 62.65330089,
+ 65.87604442, 64.46647473, 68.62278888, 60.57841779, 56.92375724, 58.26104652,
+ 55.80096089, 60.34914153, 60.40709715])
+
 
 #%% Define Obstacle Geometry
 @nb.jit(nopython=True, parallel=True, fastmath=True)
@@ -339,8 +372,8 @@ def resolve_all_collisions(N_markers, marker_pos,marker_vel,  marker_f, D_partic
                             marker_pos[j, 2] += marker_vel[j, 2] * delta_t + vzj_impact * (dt - delta_t)
 
                             # Update the force vectors to reflect the collision between the particles
-                            time_force_i = dt # 0.3 * D_particles[i] / D_particles[0]
-                            time_force_j = dt # 0.3 * D_particles[j] / D_particles[0]
+                            time_force_i = 0.3 * D_particles[i] / D_particles[0]
+                            time_force_j = 0.3 * D_particles[j] / D_particles[0]
 
                             marker_f[i, 0] -= 2.0 * m_eff * v_dot_n * nx / time_force_i
                             marker_f[i, 1] -= 2.0 * m_eff * v_dot_n * ny / time_force_i
@@ -391,7 +424,7 @@ def resolve_all_collisions(N_markers, marker_pos,marker_vel,  marker_f, D_partic
                 marker_pos[i, 2] += marker_vel[i, 2] * delta_t + vzi_impact * (dt - delta_t)
 
                 # Update the force vector to reflect the collision with the wall
-                time_force = dt # 0.3 * D_particles[i] / D_particles[0]
+                time_force = 0.3 * D_particles[i] / D_particles[0]
 
                 marker_f[i, 1] -= 2.0 * mi * v_dot_n * ny / time_force
 
@@ -483,7 +516,7 @@ def resolve_all_collisions(N_markers, marker_pos,marker_vel,  marker_f, D_partic
                             marker_pos[i, 2] += marker_vel[i, 2] * delta_t + vz_impact * (dt - delta_t)
 
                             # Update the force vector to reflect the collision with the cylinder surface
-                            time_force = dt # 0.3 * D_particles[i] / D_particles[0] # time step for force update (can be adjusted)
+                            time_force = 0.3 * D_particles[i] / D_particles[0] # time step for force update (can be adjusted)
                             
                             marker_f[i, 0] -= 2 * mi * v_dot_n * nx / time_force
                             marker_f[i, 1] -= 2 * mi * v_dot_n * ny / time_force
@@ -536,7 +569,7 @@ def resolve_all_collisions(N_markers, marker_pos,marker_vel,  marker_f, D_partic
                                 marker_pos[i, 2] += marker_vel[i, 2] * delta_t + vz_impact * (dt - delta_t)
                                 
                                 # Update the force vector to reflect the collision with the cylinder surface
-                                time_force = dt # 0.3 * D_particles[i] / D_particles[0] # time step for force update (can be adjusted)
+                                time_force = 0.3 * D_particles[i] / D_particles[0] # time step for force update (can be adjusted)
                                 
                                 marker_f[i, 0] -= 2 * mi * v_dot_n * nx / time_force
                                 marker_f[i, 1] -= 2 * mi * v_dot_n * ny / time_force
@@ -799,7 +832,7 @@ init_marker_pos[0, 2] = cz_particle
 
 # marker 2
 init_marker_pos[1, 0] = cx_particle + 2 * D_particle2
-init_marker_pos[1, 1] = cy_particle + 0.5 * D_particle2
+init_marker_pos[1, 1] = cy_particle + 2 * D_particle2
 init_marker_pos[1, 2] = cz_particle
 
 # marker 3
@@ -811,6 +844,11 @@ init_marker_pos[2, 2] = cz_particle
 init_marker_pos[3, 0] = cx_particle + 3 * D_particle4
 init_marker_pos[3, 1] = cy_particle - 3.5 * D_particle4
 init_marker_pos[3, 2] = cz_particle
+
+# marker 5
+init_marker_pos[4, 0] = 24
+init_marker_pos[4, 1] = 36
+init_marker_pos[4, 2] = 38
 
 marker_pos = np.empty_like(init_marker_pos) # Lagrangian boundary marker positions
 marker_vel = np.empty_like(marker_pos) # Lagrangian boundary marker velocities
@@ -906,6 +944,160 @@ def compute_cylinder_z_thickness(cyl_pos, cyl_axis, cyl_radius, cyl_height, grid
         
     return thickness
 
+
+def draw_cylinder_3d(ax, position, axis, radius, height, color):
+    """Draw a finite cylinder aligned with an arbitrary 3D axis."""
+    axis = axis / np.linalg.norm(axis)
+    reference = np.array([0.0, 0.0, 1.0])
+    if abs(np.dot(axis, reference)) > 0.9:
+        reference = np.array([1.0, 0.0, 0.0])
+    basis_1 = np.cross(axis, reference)
+    basis_1 /= np.linalg.norm(basis_1)
+    basis_2 = np.cross(axis, basis_1)
+
+    angles = np.linspace(0.0, 2.0 * np.pi, 32)
+    ends = np.array([-height / 2.0, height / 2.0])
+    vertices = []
+    for end in ends:
+        center = position + end * axis
+        vertices.append(center + radius * (np.cos(angles)[:, None] * basis_1
+                                           + np.sin(angles)[:, None] * basis_2))
+
+    side_faces = []
+    for index in range(len(angles) - 1):
+        side_faces.append([vertices[0][index], vertices[0][index + 1],
+                           vertices[1][index + 1], vertices[1][index]])
+    side_faces.extend([vertices[0], vertices[1]])
+    ax.add_collection3d(Poly3DCollection(side_faces, facecolors=color,
+                                         edgecolors='none', alpha=1.0))
+
+
+def draw_sphere_3d(ax, position, radius, color):
+    """Draw a particle as a 3D sphere."""
+    phi, theta = np.mgrid[0.0:np.pi:12j, 0.0:2.0 * np.pi:24j]
+    x = position[0] + radius * np.sin(phi) * np.cos(theta)
+    y = position[1] + radius * np.sin(phi) * np.sin(theta)
+    z = position[2] + radius * np.cos(phi)
+    ax.plot_surface(x, y, z, color=color, linewidth=0, antialiased=True, alpha=1.0)
+
+
+def save_interactive_3d_html(filename, fluid_history, marker_pos_history,
+                             obstacle, Nx, Ny, Nz, N_markers):
+    """Save an animated, rotatable 3D view alongside the GIF."""
+    import plotly.graph_objects as go
+
+    stride = fluid_visual_stride
+    x_coords = np.arange(0, Nx, stride)
+    y_coords = np.arange(0, Ny, stride)
+    z_coords = np.arange(0, Nz, stride)
+    grid_x, grid_y, grid_z = np.meshgrid(x_coords, y_coords, z_coords, indexing='ij')
+    fluid_speeds = [np.sqrt(np.maximum(field[::stride, ::stride, ::stride], 0.0))
+                    for field in fluid_history]
+    fluid_max = max(max(float(np.max(speed)) for speed in fluid_speeds), 1e-12)
+
+    def make_traces(frame_index):
+        fluid_speed = fluid_speeds[frame_index]
+        traces = [go.Volume(
+            x=grid_x.ravel(), y=grid_y.ravel(), z=grid_z.ravel(),
+            value=fluid_speed.ravel(), isomin=0.0, isomax=fluid_max,
+            opacity=fluid_visual_alpha,
+            surface_count=20, colorscale='Viridis',
+            caps=dict(x_show=False, y_show=False, z_show=False),
+            colorbar=dict(title='Velocity Magnitude', x=1.08,
+                          xanchor='left', len=0.78, thickness=18),
+            name='Fluid velocity',
+            showlegend=False)]
+
+        for cylinder_index in range(N_cylinders):
+            position = cyl_pos[cylinder_index]
+            axis = cyl_axis[cylinder_index] / np.linalg.norm(cyl_axis[cylinder_index])
+            reference = np.array([0.0, 0.0, 1.0])
+            if abs(np.dot(axis, reference)) > 0.9:
+                reference = np.array([1.0, 0.0, 0.0])
+            basis_1 = np.cross(axis, reference)
+            basis_1 /= np.linalg.norm(basis_1)
+            basis_2 = np.cross(axis, basis_1)
+            angles = np.linspace(0.0, 2.0 * np.pi, 32, endpoint=False)
+            rings = []
+            for end in (-cyl_height[cylinder_index] / 2.0,
+                        cyl_height[cylinder_index] / 2.0):
+                center = position + end * axis
+                rings.append(center + cyl_radius[cylinder_index] * (
+                    np.cos(angles)[:, None] * basis_1 +
+                    np.sin(angles)[:, None] * basis_2))
+            vertices = np.vstack(rings + [position - cyl_height[cylinder_index] / 2.0 * axis,
+                                          position + cyl_height[cylinder_index] / 2.0 * axis])
+            face_i, face_j, face_k = [], [], []
+            for index in range(32):
+                next_index = (index + 1) % 32
+                face_i.extend([index, index, 64, 65])
+                face_j.extend([next_index, 32 + next_index, next_index, 32 + next_index])
+                face_k.extend([32 + next_index, 32 + index, index, 32 + index])
+            traces.append(go.Mesh3d(
+                x=vertices[:, 0], y=vertices[:, 1], z=vertices[:, 2],
+                i=face_i, j=face_j, k=face_k, color='firebrick', opacity=1.0,
+                name=f'Cylinder {cylinder_index + 1}', showlegend=False))
+
+        for marker_index in range(N_markers):
+            phi, theta = np.mgrid[0.0:np.pi:16j, 0.0:2.0 * np.pi:24j]
+            trajectory = marker_pos_history[frame_index][marker_index]
+            position = trajectory[-1]
+            radius = r_particles[marker_index]
+            traces.append(go.Surface(
+                x=position[0] + radius * np.sin(phi) * np.cos(theta),
+                y=position[1] + radius * np.sin(phi) * np.sin(theta),
+                z=position[2] + radius * np.cos(phi),
+                surfacecolor=np.zeros_like(phi), colorscale=[[0, 'black'], [1, 'black']],
+                showscale=False, opacity=1.0, name=f'Particle {marker_index + 1}',
+                showlegend=False))
+            traces.append(go.Scatter3d(
+                x=trajectory[:, 0], y=trajectory[:, 1], z=trajectory[:, 2],
+                mode='lines', line=dict(color='black', width=3),
+                name=f'Trajectory {marker_index + 1}', showlegend=False))
+        return traces
+
+    traces = make_traces(0)
+    frame_names = [str(index) for index in range(len(fluid_speeds))]
+    figure = go.Figure(data=traces,
+                       frames=[go.Frame(data=make_traces(index), name=str(index))
+                               for index in range(len(fluid_speeds))])
+    figure.update_layout(
+        title='3D Particle Diffusion - interactive animation',
+        scene=dict(xaxis_title='X Position', yaxis_title='Y Position',
+                   zaxis_title='Z Position',
+                   xaxis=dict(range=[0, Nx - 1]), yaxis=dict(range=[0, Ny - 1]),
+                   zaxis=dict(range=[0, Nz - 1]), aspectmode='cube'),
+           margin=dict(l=0, r=170, t=45, b=150),
+           showlegend=False,
+           updatemenus=[dict(type='buttons', x=0.0, y=0.06,
+                          buttons=[dict(label='Play', method='animate',
+                                        args=[frame_names, {'frame': {'duration': 250,
+                                                                      'redraw': True},
+                                                            'transition': {'duration': 0},
+                                                            'mode': 'immediate'}]),
+                                   dict(label='Pause', method='animate',
+                                        args=[[None], {'frame': {'duration': 0},
+                                                'mode': 'immediate'}])]),
+                    dict(type='buttons', x=0.0, y=0.5,
+                        buttons=[dict(label='Vitesse 1x', method='animate',
+                                   args=[frame_names, {'frame': {'duration': 250,
+                                                                 'redraw': True},
+                                                       'transition': {'duration': 0},
+                                                       'mode': 'immediate'}]),
+                               dict(label='Vitesse 2x', method='animate',
+                                   args=[frame_names, {'frame': {'duration': 125,
+                                                                 'redraw': True},
+                                                       'transition': {'duration': 0},
+                                                       'mode': 'immediate'}])])],
+           sliders=[dict(active=0, x=0.15, y=0.0, len=0.78,
+                      currentvalue=dict(prefix='Frame '),
+                      steps=[dict(label=str(index), method='animate',
+                                  args=[[str(index)], {'mode': 'immediate',
+                                                       'frame': {'duration': 0,
+                                                                 'redraw': True}}])
+                             for index in range(len(fluid_speeds))])])
+    figure.write_html(filename, include_plotlyjs=True)
+
 def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, marker_pos, marker_vel, marker_f, marker_nh, marker_nh_size, 
                  Nt, Nx, Ny, Nz, n_lattice, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, dist_func, r_gaus, sigma, A, stopping_lims, 
                  inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, inv_c_indx, BCs, skip_stop_check, 
@@ -925,33 +1117,40 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
     marker_pos_old = marker_pos.copy() # store old positions for collision resolution
     
     frames = []
-    last_frame = None
+    fluid_history = []
+    marker_history_for_html = []
     h_walls = []
+    fig_3d = None
+    ax_3d = None
+    colorbar_3d = None
+    frame_size = None
     
     for t in iterations:
-        # # Initial force distribution for the first 100 steps
-        # if t < 100:
-        #     marker_f[0, 0] = 1 # initial force marker 1. Use 1 for nu = 1/50, 3 for nu = 1/6
-        #     marker_f[0, 1] = 1 # Use 1 for nu = 1/50, 3 for nu = 1/6
-        #     marker_f[1, 1] = 2 # initial force marker 2. Use 2 for nu = 1/50, 8 for nu = 1/6
-        #     marker_f[2, 0] = 0.3 # initial force marker 3. Use 0.3 for nu = 1/50, 1.5 for nu = 1/6
-        #     marker_f[2, 1] = 0.3 # Use 0.3 for nu = 1/50, 1.5 for nu = 1/6
+        # Initial force distribution for the first 100 steps
+        if t < 100:
+            marker_f[0, 0] = 1 # initial force marker 1
+            marker_f[1, 1] = -2 # initial force marker 2
+            marker_f[2, 0] = 0.3 # initial force marker 3
+            marker_f[2, 1] = 0.3
+            marker_f[3, 0] = -0.3 # initial force marker 4
+            marker_f[3, 1] = 0.3
         
-        # # Remove force after 100 steps
-        # if t>=100:
-        #     marker_f[0, 0] = 0 # update force marker 1
-        #     marker_f[0, 1] = 0
-        #     marker_f[1, 1] = 0 # update force marker 2
-        #     marker_f[2, 0] = 0 # update force marker 3
-        #     marker_f[2, 1] = 0
-        
+        # Remove force after 100 steps
+        if t>=100:
+            marker_f[0, 0] = 0 # update force marker 1
+            marker_f[1, 1] = 0 # update force marker 2
+            marker_f[2, 0] = 0 # update force marker 3
+            marker_f[2, 1] = 0
+            marker_f[3, 0] = 0 # update force marker 4
+            marker_f[3, 1] = 0
+
         if np.isnan(u_mag_sq).any():
             imageio.mimsave(f'{output_name}.gif', frames, fps=10, loop=0)
             raise RuntimeError(f'Unrealistic velocities: t={t}')
         
         # Calculate marker forces
-        if brownian_method == "force":
-            brownian_forcing(N_markers, marker_f)
+        # if brownian_method == "force":
+        #     brownian_forcing(N_markers, marker_f)
             
         # Lubrication force
         h_wall = lubrication_correction_forcing(N_markers, marker_pos, marker_vel,  marker_f, D_particles, rho_0, rhos, nu,
@@ -1004,132 +1203,104 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
             if m == N_markers-1:
                 save_data = (t%outevery == 0) or (t == Nt-1)
         
-        # Output flow field at particle cross-section
+        # Output the interactive 3D scene and capture the current mouse-selected view.
         if save_data and live_flow_plot:
-            u_mag_sq_curr = np.max(u_mag_sq)
-            if u_mag_sq_curr > u_mag_sq_max:
-                u_mag_sq_max = u_mag_sq_curr
-            
-            m = 0
-            z_slice = min(max(int(round(marker_pos[m, 2])), 0), Nz-1)
-            
-            fig, ax = plt.subplots(figsize=(5, 4))
-            im = ax.imshow(np.sqrt(u_mag_sq[:, :, z_slice]).T, cmap='viridis', origin='lower', vmin=0, vmax=u_mag_sq_max**0.5)
-            plt.colorbar(im, label='Velocity Magnitude')
-            
-            for m_idx in range(N_markers):
-                ax.plot(marker_pos_hist[m_idx, :t+1, 0], marker_pos_hist[m_idx, :t+1, 1], 'r', alpha=0.5)
-                ax.plot(init_marker_pos[m_idx, 0], init_marker_pos[m_idx, 1], 'xr')
-                circle = plt.Circle((marker_pos[m_idx, 0], marker_pos[m_idx, 1]), r_particles[m_idx], color='red', fill=False, linewidth=1.5)
-                ax.add_patch(circle)
-            
+            if fig_3d is None:
+                fig_3d = plt.figure(figsize=(7, 6))
+                ax_3d = fig_3d.add_subplot(111, projection='3d')
+                ax_3d.view_init(elev=25.0, azim=-60.0)
+
+            current_view = (ax_3d.elev, ax_3d.azim,
+                            getattr(ax_3d, 'dist', 10.0))
+            ax_3d.cla()
+            ax_3d.view_init(elev=current_view[0], azim=current_view[1])
+            if hasattr(ax_3d, 'dist'):
+                ax_3d.dist = current_view[2]
+            ax_3d.set_xlim(0, Nx - 1)
+            ax_3d.set_ylim(0, Ny - 1)
+            ax_3d.set_zlim(0, Nz - 1)
+            ax_3d.set_autoscale_on(False)
+
+            fluid_speed = np.sqrt(np.maximum(u_mag_sq, 0.0))
+            u_mag_sq_max = max(u_mag_sq_max, np.max(u_mag_sq))
+            fluid_vmax = max(float(np.percentile(fluid_speed, 99.0)), 1e-12)
+            fluid_norm = plt.Normalize(vmin=0.0, vmax=fluid_vmax)
+            fluid_cmap = plt.get_cmap('viridis')
+            fluid_x, fluid_y = np.meshgrid(
+                np.arange(0, Nx, fluid_visual_stride),
+                np.arange(0, Ny, fluid_visual_stride), indexing='ij')
+            for z_index in np.arange(0, Nz, fluid_visual_stride):
+                slice_speed = fluid_speed[::fluid_visual_stride, ::fluid_visual_stride, z_index]
+                slice_colors = fluid_cmap(fluid_norm(slice_speed))
+                slice_colors[:, :, 3] = fluid_visual_alpha
+                slice_colors[obstacle[::fluid_visual_stride,
+                                      ::fluid_visual_stride, z_index], 3] = 0.0
+                ax_3d.plot_surface(
+                    fluid_x, fluid_y,
+                    np.full_like(fluid_x, z_index, dtype=float),
+                    facecolors=slice_colors, linewidth=0,
+                    antialiased=False, shade=False)
+            fluid_plot = plt.cm.ScalarMappable(norm=fluid_norm, cmap=fluid_cmap)
+            fluid_plot.set_array(fluid_speed)
+            if colorbar_3d is None:
+                colorbar_3d = fig_3d.colorbar(fluid_plot, ax=ax_3d, pad=0.1,
+                                              fraction=0.04,
+                                              label='Velocity Magnitude')
+            else:
+                colorbar_3d.update_normal(fluid_plot)
+
             for c_idx in range(N_cylinders):
-                pos = cyl_pos[c_idx]
-                axis = cyl_axis[c_idx] / np.linalg.norm(cyl_axis[c_idx]) 
-                r = cyl_radius[c_idx]
-                h = cyl_height[c_idx]
-                
-                sorted_pts = None
-                
-                # Case 1 : Cylinder parallel to the XY plane (u_z = 0) -> Rectangular cross-section
-                if np.abs(axis[2]) < 1e-4:
-                    dz = abs(z_slice - pos[2])
-                    if dz <= r:
-                        w_eff = np.sqrt(r**2 - dz**2)
-                        axis_2d = axis[:2] / np.linalg.norm(axis[:2])
-                        perp_2d = np.array([-axis_2d[1], axis_2d[0]])
-                        
-                        p1 = pos[:2] - (h/2)*axis_2d - w_eff*perp_2d
-                        p2 = pos[:2] + (h/2)*axis_2d - w_eff*perp_2d
-                        p3 = pos[:2] + (h/2)*axis_2d + w_eff*perp_2d
-                        p4 = pos[:2] - (h/2)*axis_2d + w_eff*perp_2d
-                        
-                        sorted_pts = np.array([p1, p2, p3, p4])
-                
-                # Case 2 : Cylinder not parallel to the XY plane (u_z != 0) -> Elliptical cross-section
-                else:
-                    if np.allclose(axis[:2], 0):
-                        v1 = np.array([1.0, 0.0, 0.0])
-                    else:
-                        v1 = np.array([-axis[1], axis[0], 0.0])
-                        v1 /= np.linalg.norm(v1)
-                    v2 = np.cross(axis, v1)
-                    
-                    t_vals = np.linspace(-h/2, h/2, 200)
-                    pts_intersection = []
-                    
-                    for t_val in t_vals:
-                        center_t = pos + t_val * axis
-                        z_diff = z_slice - center_t[2]
-                        denom = np.sqrt((r * v1[2])**2 + (r * v2[2])**2)
-                        
-                        if denom > 1e-6 and abs(z_diff) <= denom:
-                            phi0 = np.arctan2(v2[2], v1[2])
-                            arg = z_diff / denom
-                            delta_phi = np.arccos(np.clip(arg, -1.0, 1.0))
-                            
-                            for angle in [phi0 + delta_phi, phi0 - delta_phi]:
-                                pt = center_t + r * np.cos(angle) * v1 + r * np.sin(angle) * v2
-                                pts_intersection.append(pt[:2])
-                    
-                    if len(pts_intersection) > 3:
-                        pts_intersection = np.array(pts_intersection)
-                        center_2d = np.mean(pts_intersection, axis=0)
-                        angles = np.arctan2(pts_intersection[:, 1] - center_2d[1], pts_intersection[:, 0] - center_2d[0])
-                        sorted_pts = pts_intersection[np.argsort(angles)]
-                
-                # Colormap for cylinder thickness
-                if sorted_pts is not None and len(sorted_pts) > 3:
-                    x_min, y_min = np.min(sorted_pts[:, 0]), np.min(sorted_pts[:, 1])
-                    x_max, y_max = np.max(sorted_pts[:, 0]), np.max(sorted_pts[:, 1])
-                    
-                    res = 100
-                    gx, gy = np.meshgrid(np.linspace(x_min, x_max, res), 
-                                         np.linspace(y_min, y_max, res))
-                    
-                    thick_map = compute_cylinder_z_thickness(cyl_pos[c_idx], cyl_axis[c_idx], 
-                                                            cyl_radius[c_idx], cyl_height[c_idx], gx, gy)
-                    
-                    from matplotlib.path import Path
-                    path = Path(sorted_pts)
-                    points = np.column_stack((gx.flatten(), gy.flatten()))
-                    mask = path.contains_points(points).reshape(gx.shape)
-                    
-                    thick_map_masked = np.ma.masked_where(~mask | (thick_map <= 1e-5), thick_map)
-                    
-                    im_cyl = ax.imshow(thick_map_masked, origin='lower', 
-                                       extent=[x_min, x_max, y_min, y_max],
-                                       cmap='plasma', zorder=5, alpha=0.95)
-                    
-                    polygon_outline = Polygon(sorted_pts, fill=False, edgecolor='none', linewidth=0.0, zorder=6)
-                    ax.add_patch(polygon_outline)
-            
-            ax.set_xlim([0, Nx-1])
-            ax.set_ylim([0, Ny-1])
+                draw_cylinder_3d(ax_3d, cyl_pos[c_idx], cyl_axis[c_idx],
+                                 cyl_radius[c_idx], cyl_height[c_idx],
+                                 'crimson')#cm.plasma(0.25 + 0.6 * c_idx / max(N_cylinders - 1, 1)))
+
+            for m_idx in range(N_markers):
+                trajectory = marker_pos_hist[m_idx, :t + 1]
+                ax_3d.plot(trajectory[:, 0], trajectory[:, 1], trajectory[:, 2],
+                           color='black', alpha=0.6, linewidth=1.0)
+                ax_3d.scatter(*init_marker_pos[m_idx], marker='x', color='black', s=35)
+                draw_sphere_3d(ax_3d, marker_pos[m_idx], r_particles[m_idx], 'black')# 'crimson')
+
+            ax_3d.set_xlim(0, Nx - 1)
+            ax_3d.set_ylim(0, Ny - 1)
+            ax_3d.set_zlim(0, Nz - 1)
+            ax_3d.set_box_aspect((Nx, Ny, Nz), zoom=0.78)
             f_nu = Fraction(nu).limit_denominator()
-            ax.set_title(f"3D Particle Diffusion - {IB_kernel} IBM - t = {t}\n"
-            fr"Z Position = {z_slice}, $\rho_p = {rhos[0]/rho_0:.3g}\rho_0$, $\nu = {f_nu.numerator}/{f_nu.denominator}$, $k_B T = {kB_T:.3g}$")
-            ax.set_xlabel('X Position')
-            ax.set_ylabel('Y Position')
-            plt.tight_layout()
+            volume_domain = Nx * Ny * Nz
+            volume_cylinders = np.sum(np.pi * cyl_radius**2 * cyl_height)
+            ax_3d.set_title(f"3D Particle Diffusion - {IB_kernel} IBM\n"
+                            fr"t = {t}, $\nu = {f_nu.numerator}/{f_nu.denominator}$, porosity = {1-volume_cylinders/volume_domain:.3g}")
+            ax_3d.set_xlabel('X Position')
+            ax_3d.set_ylabel('Y Position')
+            ax_3d.set_zlabel('Z Position')
+            fig_3d.tight_layout()
+            if interactive_3d_view:
+                plt.pause(0.001)
             
             # Save the current frame for GIF creation
-            fig.canvas.draw()
-            image = np.frombuffer(fig.canvas.buffer_rgba(), dtype='uint8')
-            image = image.reshape(fig.canvas.get_width_height()[::-1] + (4,))[:, :, :3]
+            frame_buffer = io.BytesIO()
+            fig_3d.savefig(frame_buffer, format='png', dpi=100)
+            frame_buffer.seek(0)
+            image = np.asarray(Image.open(frame_buffer).convert('RGB')).copy()
+            frame_buffer.close()
+            if frame_size is None:
+                frame_size = (image.shape[1], image.shape[0])
+            elif (image.shape[1], image.shape[0]) != frame_size:
+                image = np.asarray(Image.fromarray(image).resize(frame_size, Image.Resampling.LANCZOS))
             frames.append(image)
-            last_frame = image.copy()
-            plt.close(fig)
+            fluid_history.append(u_mag_sq.copy())
+            marker_history_for_html.append(marker_pos_hist[:, :t + 1, :].copy())
         
         if break_cond:
             break
     
     if live_flow_plot and len(frames) > 0:
         imageio.mimsave(f'{output_name}.gif', frames, fps=10, loop=0)
-        if last_frame is not None:
-            imageio.imwrite(f'{output_name}_final_frame.png', last_frame)
-        else:
-            plt.savefig(f'{output_name}_final_frame.png', dpi=300)
+        save_interactive_3d_html(
+            interactive_html_name, fluid_history, marker_history_for_html,
+            obstacle, Nx, Ny, Nz, N_markers)
+    if fig_3d is not None:
+        plt.close(fig_3d)
     end_time = time.perf_counter()
     loop_wt = end_time - start_time
     cell_updates = n_lattice*(t+1)
