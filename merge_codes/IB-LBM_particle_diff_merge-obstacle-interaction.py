@@ -124,12 +124,12 @@ f_dist_width = 2 # width of the surface gaussian force distribution function [la
 
 
 # Fluid
-nu = 1/50 # kinematic viscosity [m2 s-1]
+nu = 1/6 # kinematic viscosity [m2 s-1]
 rho_0 = 1.0 # initial density [kg m-3]
 mu = rho_0*nu # dynamic viscosity [kg m-1 s-1]
 
 # Particle volumic masses
-rhos = np.ones(N_markers, dtype=np.float64) * 1.14 * rho_0 # list of particle densities (assumed to be the same for now)
+rhos = np.ones(N_markers, dtype=np.float64) * rho_0 # list of particle densities (assumed to be the same for now)
 
 # Diffusion
 kB_T = 0.005
@@ -252,7 +252,7 @@ def brownian_forcing(N_markers, marker_f):
 # Collisions handling
 @nb.jit(nopython=True, fastmath=True)
 def resolve_all_collisions(N_markers, marker_pos,marker_vel,  marker_f, D_particles, rhos, nu, 
-                            N_cylinders, cyl_pos, cyl_axis, cyl_radius, cyl_height, dt=1.0):
+                            N_cylinders, cyl_pos, cyl_axis, cyl_radius, cyl_height, wall_y, dt=1.0):
     """
     Unified 3D collision handling via addition of normal force vector (marker_f):
       - Case 1: Particle-particle collision
@@ -263,7 +263,7 @@ def resolve_all_collisions(N_markers, marker_pos,marker_vel,  marker_f, D_partic
     # Table to keep track of which markers have already collided in this time step
     collided = np.zeros(N_markers, dtype=nb.boolean)
     
-    # Case 1 : Collision particule-particule
+    # Case 1 : Particle-particle collision
     for i in range(N_markers):
         if collided[i]:
             continue
@@ -354,7 +354,50 @@ def resolve_all_collisions(N_markers, marker_pos,marker_vel,  marker_f, D_partic
                             collided[j] = True
                             break
     
-    # Case 2 : Collision particule-cylindre (side)
+    # Case 2 : Particle-wall collision (horizontal wall at y = wall_y)
+    for i in range(N_markers):
+        if collided[i]:
+            continue
+        
+        # Radius and mass of the particle
+        Ri = D_particles[i] / 2.0
+        mi = (4.0 / 3.0) * np.pi * rhos[i] * Ri**3
+        
+        # Calculate the distance from the particle surface to the wall and the vertical velocity component
+        dist_y = marker_pos[i, 1] - wall_y
+        vy = marker_vel[i, 1]
+
+        # Check if particle is moving towards the bottom wall (vy < 0)
+        if vy < 0.0:
+            # Compute the time to reach the wall surface
+            delta_t = (Ri - dist_y) / vy
+
+            if 0.0 < delta_t <= dt:
+                # Calculate the normal vector and speed projection at the point of impact
+                nx = 0.0
+                ny = 1.0
+                nz = 0.0
+
+                v_dot_n = vy
+
+                # Calculate the velocity vector after collision with the wall
+                vxi_impact = marker_vel[i, 0]
+                vyi_impact = -vy
+                vzi_impact = marker_vel[i, 2]
+
+                # Update the position of the particle within the time step, considering the impact
+                marker_pos[i, 0] += marker_vel[i, 0] * delta_t + vxi_impact * (dt - delta_t)
+                marker_pos[i, 1] += marker_vel[i, 1] * delta_t + vyi_impact * (dt - delta_t)
+                marker_pos[i, 2] += marker_vel[i, 2] * delta_t + vzi_impact * (dt - delta_t)
+
+                # Update the force vector to reflect the collision with the wall
+                time_force = 0.3 * D_particles[i] / D_particles[0]
+
+                marker_f[i, 1] -= 2.0 * mi * v_dot_n * ny / time_force
+
+                collided[i] = True
+        
+    # Case 3 : Particle-cylinder collision (side and face)
     for i in range(N_markers):
         if collided[i]:
             continue
@@ -502,7 +545,7 @@ def resolve_all_collisions(N_markers, marker_pos,marker_vel,  marker_f, D_partic
                                 collided[i] = True
                                 break
 
-    # Case 3 : no collision, free movement
+    # Case 4 : no collision, free movement
     for i in range(N_markers):
         if not collided[i]:
             marker_pos[i, 0] += marker_vel[i, 0] * dt
@@ -882,28 +925,33 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
     marker_pos_old = marker_pos.copy() # store old positions for collision resolution
     
     frames = []
+    last_frame = None
     h_walls = []
     
     for t in iterations:
-        # Initial force distribution for the first 100 steps
-        if t < 100:
-            marker_f[0, 0] = 1 # initial force marker 1
-            marker_f[1, 1] = 2 # initial force marker 2
-            marker_f[2, 0] = 0.3 # initial force marker 3
-            marker_f[2, 1] = 0.3
+        # # Initial force distribution for the first 100 steps
+        # if t < 100:
+        #     marker_f[0, 0] = 3 # initial force marker 1
+        #     marker_f[0, 1] = 3
+        #     marker_f[1, 1] = 8 # initial force marker 2
+        #     marker_f[2, 0] = 1.5 # initial force marker 3
+        #     marker_f[2, 1] = 1.5
         
-        # Remove force after 100 steps
-        if t>=100:
-            marker_f[0, 0] = 0 # update force marker 1
-            marker_f[2, 1] = 0 # update force marker 3
+        # # Remove force after 100 steps
+        # if t>=100:
+        #     marker_f[0, 0] = 0 # update force marker 1
+        #     marker_f[0, 1] = 0
+        #     marker_f[1, 1] = 0 # update force marker 2
+        #     marker_f[2, 0] = 0 # update force marker 3
+        #     marker_f[2, 1] = 0
         
         if np.isnan(u_mag_sq).any():
             imageio.mimsave(f'{output_name}.gif', frames, fps=10, loop=0)
             raise RuntimeError(f'Unrealistic velocities: t={t}')
         
         # Calculate marker forces
-        # if brownian_method == "force":
-        #     brownian_forcing(N_markers, marker_f)
+        if brownian_method == "force":
+            brownian_forcing(N_markers, marker_f)
             
         # Lubrication force
         h_wall = lubrication_correction_forcing(N_markers, marker_pos, marker_vel,  marker_f, D_particles, rho_0, rhos, nu,
@@ -913,7 +961,7 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
 
         # Resolve collisions and update marker positions and forces
         resolve_all_collisions(N_markers, marker_pos, marker_vel,  marker_f, D_particles, rhos, nu, 
-                            N_cylinders, cyl_pos, cyl_axis, cyl_radius, cyl_height, dt=1.0)
+                            N_cylinders, cyl_pos, cyl_axis, cyl_radius, cyl_height, wall_y, dt=1.0)
         
         # Calculate forcing due to IB markers
         int_err = IB_force_density(Nx, Ny, Nz, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, F, 
@@ -1070,6 +1118,7 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
             image = np.frombuffer(fig.canvas.buffer_rgba(), dtype='uint8')
             image = image.reshape(fig.canvas.get_width_height()[::-1] + (4,))[:, :, :3]
             frames.append(image)
+            last_frame = image.copy()
             plt.close(fig)
         
         if break_cond:
@@ -1077,6 +1126,10 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
     
     if live_flow_plot and len(frames) > 0:
         imageio.mimsave(f'{output_name}.gif', frames, fps=10, loop=0)
+        if last_frame is not None:
+            imageio.imwrite(f'{output_name}_final_frame.png', last_frame)
+        else:
+            plt.savefig(f'{output_name}_final_frame.png', dpi=300)
     end_time = time.perf_counter()
     loop_wt = end_time - start_time
     cell_updates = n_lattice*(t+1)
