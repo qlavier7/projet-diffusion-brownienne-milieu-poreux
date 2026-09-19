@@ -18,6 +18,7 @@ Script: 'IB-LBM_particle_diff_vF.py'
 - brownian_method = ['none', 'force', 'fluctuation'][1]
 - N_cylinders = 0
 - outevery = int(Nt/N_outputs)
+
 - copy in lines 798 (if not already in the scripts):
 # marker 1
 init_marker_pos[0, 0] = cx_particle
@@ -45,6 +46,7 @@ Script: 'IB-LBM_particle_diff_vF.py'
 - brownian_method = ['none', 'force', 'fluctuation'][2]
 - N_cylinders = 0
 - outevery = int(Nt/N_outputs)
+
 - copy in lines 798 (if not already in the scripts):
 # marker 1
 init_marker_pos[0, 0] = cx_particle
