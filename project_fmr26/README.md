@@ -1,5 +1,63 @@
 ### Use the following configs in order to reproduce the different figures from the report
 
+
+##########################################################
+
+
+### Figure 2a (stochastic forcing):
+Script: 'IB-LBM_particle_diff_vF.py'
+- N_outputs = 2
+- sim_time = 10000
+- BCs = [[0, 0], [0, 0], [0, 0]]
+- D_particle1 = 7
+- spacing_mutl = 4
+- N_markers = 1
+- nu = 1/6
+- rhos = np.ones(N_markers, dtype=np.float64) * rho_0
+- kB_T = 0.005
+- brownian_method = ['none', 'force', 'fluctuation'][1]
+- N_cylinders = 0
+- outevery = int(Nt/N_outputs)
+- copy in lines 798 (if not already in the scripts):
+# marker 1
+init_marker_pos[0, 0] = cx_particle
+init_marker_pos[0, 1] = cy_particle
+init_marker_pos[0, 2] = cz_particle
+
+- comment lines 803-816
+- comment lines 935-949
+
+
+##########################################################
+
+
+### Figure 2b (fluctuating LBM):
+Script: 'IB-LBM_particle_diff_vF.py'
+- N_outputs = 2
+- sim_time = 10000
+- BCs = [[0, 0], [0, 0], [0, 0]]
+- D_particle1 = 7
+- spacing_mutl = 4
+- N_markers = 1
+- nu = 1/6
+- rhos = np.ones(N_markers, dtype=np.float64) * rho_0
+- kB_T = 0.005
+- brownian_method = ['none', 'force', 'fluctuation'][2]
+- N_cylinders = 0
+- outevery = int(Nt/N_outputs)
+- copy in lines 798 (if not already in the scripts):
+# marker 1
+init_marker_pos[0, 0] = cx_particle
+init_marker_pos[0, 1] = cy_particle
+init_marker_pos[0, 2] = cz_particle
+
+- comment lines 803-816
+- comment lines 935-949
+
+
+##########################################################
+
+
 ### Figure 6a (particle-obstacle collisions, case nu=1/50):
 Script: 'IB-LBM_particle_diff_vF.py'
 - N_outputs = 10
@@ -9,12 +67,14 @@ Script: 'IB-LBM_particle_diff_vF.py'
 - D_particle2 = 10
 - D_particle3 = 4
 - D_particle4 = 4
+- spacing_mutl = 10
 - N_markers = 4
 - nu = 1/50
 - rhos = np.ones(N_markers, dtype=np.float64) * 1.14 * rho_0
 - brownian_method = ['none', 'force', 'fluctuation'][0]
 - collision_time_model = "hertzian"
 - N_cylinders = 3
+- outevery = 10
 
 - copy in line 798 (if not already in the script) :
 # marker 1
