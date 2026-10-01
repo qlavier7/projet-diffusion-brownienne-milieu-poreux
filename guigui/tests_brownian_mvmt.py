@@ -1,6 +1,6 @@
 import copy
 import numpy as np
-from obs_IB_LBM_particle_diff_example import run_diff_sim, initialise_fluid_arrays, initialise_IBM, initialise_obstacle
+from obs_IB_LBM_particle_diff import run_diff_sim, initialise_fluid_arrays, initialise_IBM, initialise_obstacle
 from obs_forced_LBGK_lib import get_LBM_consts
 from multi_marker_IBM_lib import gaus_consts, gaus_dist, dual_gaus_consts, dual_gaus_dist, plot_gaus_dist, IB_force_density, interpolate_marker_vels
 import matplotlib.pyplot as plt
@@ -23,7 +23,7 @@ cz_particle = (Nz-1)/2 # particle initial z position
 N_markers = 1 # number of particle markers - need to offset initial positions for anything to happen when increasing this from 1
 stop_dist = D_particle # minimum distance from the particle to the wall before the simulation is stopped
 stopping_lims = [[stop_dist, Nx-1-stop_dist], [stop_dist, Ny-1-stop_dist], [stop_dist, Nz-1-stop_dist]]
-IB_kernel = ['standard gaussian', 'dual gaussian'][0] # force distribution function to use
+IB_kernel = ['standard gaussian', 'dual gaussian'][1] # force distribution function to use
 f_dist_width = 2 # width of the surface gaussian force distribution function [lattice points] (only for dual gaussian IB kernel)
 nu = 1/6 # kinematic viscosity [m2 s-1]
 rho_0 = 1.0 # initial density [kg m-3]
@@ -47,6 +47,7 @@ c = LBM_consts['c']
 inv_cx_indx = LBM_consts['inv_cx_indx']
 inv_cy_indx = LBM_consts['inv_cy_indx']
 inv_cz_indx = LBM_consts['inv_cz_indx']
+inv_c_indx = LBM_consts['inv_c_indx']
 rho = np.empty((Nx, Ny, Nz), dtype=np.float64) # densities
 u = np.empty((Nx, Ny, Nz, 3), dtype=np.float64) # velocities
 u_mag_sq = np.empty_like(rho) # squared velocity magnitudes
@@ -89,7 +90,7 @@ initialise_fluid_arrays(Nx, Ny, Nz, rho_0, rho, u, u_mag_sq, F, pops_pre, pops_p
 initialise_IBM(init_marker_pos, marker_pos, marker_vel, marker_f)
 initialise_obstacle(obstacle, Nx, Ny, Nz)
 
-collide_forced = ['initial', 'fluctuation'][0]
+brownian_method = ['initial', 'fluctuation'][0]
 
 # Fluid Domain Boundary Conditions
 ## BCs = [[x_low, x_high], [y_low, y_high], [z_low, z_high]]
@@ -131,7 +132,6 @@ initial_state = {
 }
 
 def get_fresh_params(state):
-    """Crée une copie indépendante de chaque variable d'état."""
     return {
         key: val.copy() if isinstance(val, np.ndarray) else copy.deepcopy(val)
         for key, val in state.items()
@@ -144,7 +144,6 @@ N_simulations = 20
 for i in range(N_simulations):
     print(f"Étape {i}")
 
-    # Réinitialisation des tableaux d'état en place avant chaque itération
     initialise_fluid_arrays(
         Nx, Ny, Nz, rho_0, rho, u, u_mag_sq, F, pops_pre, pops_post
     )
@@ -152,12 +151,11 @@ for i in range(N_simulations):
 
     sim_res = run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, marker_pos, marker_vel, marker_f, marker_nh, marker_nh_size, 
                  Nt, Nx, Ny, Nz, n_lattice, r_cutoff_outer, r_cutoff_outer_sq, r_cutoff_inner_sq, dist_func, r_gaus, sigma, A, stopping_lims, 
-                 inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, BCs, skip_stop_check, 
-                live_flow_plot, outevery, collide_forced)
+                 inv_cs2, inv_2cs2, inv_cs4, inv_2cs4, omega, omega_prime, omega_S_coeff, N_vels, w, c, inv_cx_indx, inv_cy_indx, inv_cz_indx, inv_c_indx, BCs, skip_stop_check, 
+                 live_flow_plot, outevery, brownian_method)
 
     marker_pos_hist = sim_res[0]
 
-    # Extraction sous forme de liste
     hist_list = (
         marker_pos_hist.tolist()
         if isinstance(marker_pos_hist, np.ndarray)
@@ -169,47 +167,22 @@ for i in range(N_simulations):
 
 def process_and_plot_msd(matrix, dt=1.0, txt_filename="msd_matrix.txt"):
     min_len = min(len(traj) for traj in matrix)
-
-    # Tronquer chaque trajectoire à min_len
     Matrix_aligned = [traj[:min_len] for traj in matrix]
-
-# Conversion NumPy sans erreur
     Matrix_np = np.asarray(Matrix_aligned)
-    # Conversion en tableau numpy 3D de forme (M, N, 3)
     data = Matrix_np
     M, N, _ = data.shape
     print(data.shape)
-    
-    # Calcul du déplacement par rapport à t = 0 : pos(t) - pos(0)
     displacements = data - data[:, 0:1, :]
-    
-    # MSD individuel pour chaque simulation : dx² + dy² + dz² (forme : M, N)
     msd_individual = np.sum(displacements**2, axis=2)
-    
-    # MSD moyen sur l'ensemble des M simulations (forme : N)
     msd_mean = np.mean(msd_individual, axis=0)
-    
-    # Temps de simulation
     time = np.arange(N) * dt
-    
-    # Sauvegarde avec np.savetxt
-    # np.savetxt gère les matrices 2D : on formate (N lignes, M + 2 colonnes)
     export_matrix = np.column_stack([time, msd_mean, msd_individual.T])
     header = "Temps\tMSD_moyen\t" + "\t".join([f"Sim_{i}" for i in range(M)])
     np.savetxt(txt_filename, export_matrix, fmt="%.6e", delimiter="\t", header=header)
-    
-    # Tracé du graphique
     plt.figure(figsize=(8, 5))
-    
-    # Courbes individuelles en gris clair
     plt.plot(time, msd_individual.T, color="lightgray", alpha=0.8)
-    
-    # Courbe moyenne en rouge au-dessus
     plt.plot(time, msd_mean, color="red", linewidth=2.5, label="MSD")
-    
-    # Entrée factice pour la légende du gris clair
     plt.plot([], [], color="lightgray", label=f"Simulations ({M})")
-    
     plt.xlabel("Simulation time")
     plt.xlim(0)
     plt.ylim(0)
@@ -219,10 +192,8 @@ def process_and_plot_msd(matrix, dt=1.0, txt_filename="msd_matrix.txt"):
     plt.grid(True, linestyle="--", alpha=0.5)
     plt.tight_layout()
     plt.show()
-
     return msd_individual, msd_mean
 
-# À la fin de ta boucle for :
 msd_ind, msd_moy = process_and_plot_msd(Matrix, dt=1.0, txt_filename="resultats_msd.txt")
     
     

@@ -60,6 +60,97 @@ init_marker_pos[0, 2] = cz_particle
 ##########################################################
 
 
+### Figure 3a (MSD stochastic forcing):
+Script: 'IB-LBM_particle_diff_vF.py'
+- live_flow_plot = False
+- sim_time = 1000
+- BCs = [[0, 0], [0, 0], [0, 0]]
+- D_particle1 = 7
+- spacing_mutl = 10
+- N_markers = 1
+- nu = 1/6
+- rhos = np.ones(N_markers, dtype=np.float64) * rho_0
+- kB_T = 0.005
+- brownian_method = ['none', 'force', 'fluctuation'][1]
+- N_cylinders = 0
+- outevery = int(Nt/N_outputs)
+
+- copy in lines 798 (if not already in the scripts):
+# marker 1
+init_marker_pos[0, 0] = cx_particle
+init_marker_pos[0, 1] = cy_particle
+init_marker_pos[0, 2] = cz_particle
+
+- comment lines 803-816
+- comment lines 935-949
+
+
+Script: 'tests_brownian.py'
+- live_flow_plot = False
+- sim_time = 1000
+- BCs = [[0, 0], [0, 0], [0, 0]]
+- D_particle1 = 7
+- spacing_mutl = 10
+- N_markers = 1
+- nu = 1/6
+- rhos = np.ones(N_markers, dtype=np.float64) * rho_0
+- kB_T = 0.005
+- brownian_method = ['none', 'force', 'fluctuation'][1]
+- N_cylinders = 0
+- outevery = int(Nt/N_outputs)
+- N_simulations = 100
+
+
+
+##########################################################
+
+
+### Figure 3b (MSD fluctuating LBM):
+Script: 'IB-LBM_particle_diff_vF.py'
+- live_flow_plot = False
+- sim_time = 1000
+- BCs = [[0, 0], [0, 0], [0, 0]]
+- D_particle1 = 7
+- spacing_mutl = 10
+- N_markers = 1
+- nu = 1/6
+- rhos = np.ones(N_markers, dtype=np.float64) * rho_0
+- kB_T = 0.005
+- brownian_method = ['none', 'force', 'fluctuation'][1]
+- N_cylinders = 0
+- outevery = int(Nt/N_outputs)
+
+- copy in lines 798 (if not already in the scripts):
+# marker 1
+init_marker_pos[0, 0] = cx_particle
+init_marker_pos[0, 1] = cy_particle
+init_marker_pos[0, 2] = cz_particle
+
+- comment lines 803-816
+- comment lines 935-949
+
+
+Script: 'tests_brownian.py'
+- live_flow_plot = False
+- sim_time = 1000
+- BCs = [[0, 0], [0, 0], [0, 0]]
+- D_particle1 = 7
+- spacing_mutl = 10
+- N_markers = 1
+- nu = 1/6
+- rhos = np.ones(N_markers, dtype=np.float64) * rho_0
+- kB_T = 0.005
+- brownian_method = ['none', 'force', 'fluctuation'][1]
+- N_cylinders = 0
+- outevery = int(Nt/N_outputs)
+- N_simulations = 100
+
+
+
+##########################################################
+
+
+
 ### Figure 6a (particle-obstacle collisions, case nu=1/50):
 Script: 'IB-LBM_particle_diff_vF.py'
 - N_outputs = 10

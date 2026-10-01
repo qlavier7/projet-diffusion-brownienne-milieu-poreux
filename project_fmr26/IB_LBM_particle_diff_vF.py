@@ -64,7 +64,7 @@ from matplotlib.patches import Polygon
 import matplotlib.cm as cm
 from fractions import Fraction
 
-from obs_forced_LBGK_lib import get_LBM_consts, initialise_pops, update_LBM_pops_closed#, update_LBM_pops_closed_combined
+from obs_forced_LBGK_lib import get_LBM_consts, initialise_pops, update_LBM_pops_closed
 from multi_marker_IBM_lib_v2 import gaus_consts, gaus_dist, dual_gaus_consts, dual_gaus_dist, plot_gaus_dist, IB_force_density, interpolate_marker_vels
 
 max_mem_avail = 12.0e9 # maximum available memory [bytes]
@@ -75,12 +75,12 @@ output_name = 'particle_diffusion' # name of the output file name
 # Graphing and Outputs
 show_gaus_dist = False # plot the y distribution of the force distribution function
 live_flow_plot = True # plot the flow field during the simulation
-N_outputs = 10 # n.o. times to plot the solution field (only if live_flow_plot=True)
+N_outputs = 1 # n.o. times to plot the solution field (only if live_flow_plot=True)
 show_mass = False # plot the total fluid mass over the simulation duration - can be useful for identifying instabilities (should remain constant)
 
 
 # Simulation Duration
-sim_time = 500 # simulation time [s] - adjust accordingly
+sim_time = 5 # simulation time [s] - adjust accordingly
 
 
 # Fluid Domain Boundary Conditions
@@ -764,7 +764,7 @@ pops_post = np.empty_like(pops_pre) # second DVDF array for efficient data writi
 
 
 # Obstacle Array
-obstacle = np.zeros_like(rho, dtype=np.bool)
+obstacle = np.zeros_like(rho, dtype=bool)
 
 # IBM setup
 sigma = np.empty(N_markers, dtype=np.float64)
@@ -933,20 +933,21 @@ def run_diff_sim(pops_pre, pops_post, F, rho, u, u_mag_sq, obstacle, N_markers, 
     
     for t in iterations:
         # Initial force distribution for the first 100 steps
-        if t < 100:
-            marker_f[0, 0] = 3 # initial force marker 1. Use 1 for nu = 1/50, 3 for nu = 1/6
-            marker_f[0, 1] = 3 # Use 1 for nu = 1/50, 3 for nu = 1/6
-            marker_f[1, 1] = 8 # initial force marker 2. Use 2 for nu = 1/50, 8 for nu = 1/6
-            marker_f[2, 0] = 1.5 # initial force marker 3. Use 0.3 for nu = 1/50, 1.5 for nu = 1/6
-            marker_f[2, 1] = 1.5 # Use 0.3 for nu = 1/50, 1.5 for nu = 1/6
+
+        # if t < 100:
+        #     marker_f[0, 0] = 3 # initial force marker 1. Use 1 for nu = 1/50, 3 for nu = 1/6
+        #     marker_f[0, 1] = 3 # Use 1 for nu = 1/50, 3 for nu = 1/6
+        #     marker_f[1, 1] = 8 # initial force marker 2. Use 2 for nu = 1/50, 8 for nu = 1/6
+        #     marker_f[2, 0] = 1.5 # initial force marker 3. Use 0.3 for nu = 1/50, 1.5 for nu = 1/6
+        #     marker_f[2, 1] = 1.5 # Use 0.3 for nu = 1/50, 1.5 for nu = 1/6
         
-        # Remove force after 100 steps
-        if t>=100:
-            marker_f[0, 0] = 0 # update force marker 1
-            marker_f[0, 1] = 0
-            marker_f[1, 1] = 0 # update force marker 2
-            marker_f[2, 0] = 0 # update force marker 3
-            marker_f[2, 1] = 0
+        # # Remove force after 100 steps
+        # if t>=100:
+        #     marker_f[0, 0] = 0 # update force marker 1
+        #     marker_f[0, 1] = 0
+        #     marker_f[1, 1] = 0 # update force marker 2
+        #     marker_f[2, 0] = 0 # update force marker 3
+        #     marker_f[2, 1] = 0
         
         if np.isnan(u_mag_sq).any():
             imageio.mimsave(f'{output_name}.gif', frames, fps=10, loop=0)
