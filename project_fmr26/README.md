@@ -237,6 +237,92 @@ if t>=100:
 
 ##########################################################
 
+### Figure 8b (Falling of a sphere onto a horizontal wall):
+Script: 'IB-LBM_particle_diff_vF.py'
+- N_outputs = 10
+- sim_time = 1200
+- BCs = [[0, 0], [1, 1], [0, 0]]
+- D_particle = 9.6
+- D_particles = [D_particle]
+- spacing_mutl = 10
+- N_markers = 1
+- nu = 1/6
+- F_gravity = 0.4
+- lubrication_threshold = 2/3
+- rhos = np.ones(N_markers, dtype=np.float64) * 1.14 * rho_0
+- brownian_method = ['none', 'force', 'fluctuation'][0]
+- collision_time_model = "hertzian"
+- N_cylinders = 0
+- outevery = 10
+
+# marker
+init_marker_pos[:, 0] = cx_particle
+init_marker_pos[:, 1] = 1.2*cy_particle + wall_y
+init_marker_pos[:, 2] = cz_particle
+
+# plot figure before the return of the function run_diff_sim
+plot_settling_fig8(h_walls, r_particles[0], nu, dt=1.0, step=2)
+
+
+##########################################################
+
+### Figure 9 (Sedimentation of two spheres onto a horizontal wall):
+Script: 'IB-LBM_particle_diff_vF.py'
+- N_outputs = 10
+- sim_time = 2200
+- BCs = [[0, 0], [1, 1], [0, 0]]
+- D_particle = 9.6 
+- D_particles = [D_particle, D_particle] 
+- spacing_mutl = 10
+- N_markers = 2
+- nu = 1/6
+- F_gravity = 0.6
+- lubrication_threshold = 2/3
+- rhos = np.ones(N_markers, dtype=np.float64) * 1.14 * rho_0
+- brownian_method = ['none', 'force', 'fluctuation'][0]
+- collision_time_model = "hertzian"
+- N_cylinders = 0
+- outevery = 10
+- imageio.mimsave(f'{output_gif_filename}.gif', frames, fps=25, loop=0)
+
+# marker
+init_marker_pos[0, 0] = cx_particle
+init_marker_pos[0, 1] = cy_particle
+init_marker_pos[0, 2] = cz_particle
+
+init_marker_pos[1, 0] = cx_particle + 0.1*D_particles[0]
+init_marker_pos[1, 1] = cy_particle + 1.6*D_particles[0]
+init_marker_pos[1, 2] = cz_particle
+
+### Figure 10 (Brownian sedimentation of a spheres, falling onto a horizontal wall):
+Script: 'IB-LBM_particle_diff_vF.py'
+- N_outputs = 10
+- sim_time = 11000
+- BCs = [[0, 0], [1, 1], [0, 0]]
+- D_particle = 9.6 
+- D_particles = [D_particle] 
+- spacing_mutl = 10
+- N_markers = 2
+- nu = 1/6
+- F_gravity = 0.15
+- lubrication_threshold = 2/3
+- rhos = np.ones(N_markers, dtype=np.float64) * 1.14 * rho_0
+- brownian_method = ['none', 'force', 'fluctuation'][2]
+- collision_time_model = "hertzian"
+- N_cylinders = 0
+- outevery = 10
+- imageio.mimsave(f'{output_gif_filename}.gif', frames, fps=30, loop=0)
+
+# marker
+init_marker_pos[0, 0] = cx_particle
+init_marker_pos[0, 1] = 30   # cy_particle = 30 (zoom)
+init_marker_pos[0, 2] = cz_particle
+
+# plot figure before the return of the function run_diff_sim
+plot_wall_distance(h_walls, r_particles[0], nu, dt=1.0, step=1)
+
+##########################################################
+
 
 ### Figure 11a (amplified brownian motion):
 Script: 'IB-LBM_particle_diff_3d_vF.py'
